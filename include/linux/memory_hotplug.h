@@ -71,6 +71,14 @@ typedef int __bitwise mhp_t;
 #define MEMHP_MERGE_RESOURCE	((__force mhp_t)BIT(0))
 
 /*
+ * We want memmap (struct page array) to be self contained.
+ * To do so, we will use the beginning of the hot-added range to build
+ * the page tables for the memmap array that describes the entire range.
+ * Only selected architectures support it with SPARSE_VMEMMAP.
+ */
+#define MEMHP_MEMMAP_ON_MEMORY	((__force mhp_t)BIT(1))
+
+/*
  * Extended parameters for memory hotplug:
  * altmap: alternative allocator for memmap array (optional)
  * pgprot: page protection flags to apply to newly created page tables
