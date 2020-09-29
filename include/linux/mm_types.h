@@ -171,6 +171,11 @@ struct page {
 			 * pmem backed DAX files are mapped.
 			 */
 		};
+		struct {	/* Vmemmap pages */
+			unsigned long vmemmap_head;
+			unsigned long vmemmap_sections; /* Number of sections */
+			unsigned long vmemmap_pages;    /* Number of pages */
+		};
 
 		/** @rcu_head: You can use this to free a page by RCU. */
 		struct rcu_head rcu_head;

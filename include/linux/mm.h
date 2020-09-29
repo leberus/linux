@@ -3124,6 +3124,23 @@ static inline bool page_is_guard(struct page *page)
 static inline unsigned int debug_guardpage_minorder(void) { return 0; }
 static inline bool debug_guardpage_enabled(void) { return false; }
 static inline bool page_is_guard(struct page *page) { return false; }
+
+static __always_inline struct page *vmemmap_head(struct page *page)
+{
+	return (struct page *)page->vmemmap_head;
+}
+
+static __always_inline unsigned long vmemmap_nr_sections(struct page *page)
+{
+	struct page *head = vmemmap_head(page);
+	return head->vmemmap_sections;
+}
+
+static __always_inline unsigned long vmemmap_nr_pages(struct page *page)
+{
+	struct page *head = vmemmap_head(page);
+	return head->vmemmap_pages - (page - head);
+}
 #endif /* CONFIG_DEBUG_PAGEALLOC */
 
 #if MAX_NUMNODES > 1

@@ -718,6 +718,7 @@ PAGEFLAG_FALSE(DoubleMap)
 #define PG_kmemcg	0x00000200
 #define PG_table	0x00000400
 #define PG_guard	0x00000800
+#define PG_vmemmap     0x00001000
 
 #define PageType(page, flag)						\
 	((page->page_type & (PAGE_TYPE_BASE | flag)) == PAGE_TYPE_BASE)
@@ -783,6 +784,12 @@ PAGE_TYPE_OPS(Table, table)
  * Marks guardpages used with debug_pagealloc.
  */
 PAGE_TYPE_OPS(Guard, guard)
+
+/*
+ * Vmemmap pages are pages used to create the memmap array,
+ * self hosted within the hot-added range. (see include/linux/memory_hotplug.h)
+ */
+PAGE_TYPE_OPS(Vmemmap, vmemmap)
 
 extern bool is_free_buddy_page(struct page *page);
 
