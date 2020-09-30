@@ -8762,6 +8762,13 @@ void __offline_isolated_pages(unsigned long start_pfn, unsigned long end_pfn)
 	while (pfn < end_pfn) {
 		page = pfn_to_page(pfn);
 		/*
+		 * Skip vmemmap pages
+		 */
+		if (PageVmemmap(page)) {
+			pfn += vmemmap_nr_pages(page);
+			continue;
+		}
+		/*
 		 * The HWPoisoned page may be not in buddy system, and
 		 * page_count() is not 0.
 		 */

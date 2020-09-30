@@ -159,6 +159,7 @@ static void pageunmap_range(struct dev_pagemap *pgmap, int range_id)
 
 	mem_hotplug_begin();
 	remove_pfn_range_from_zone(page_zone(first_page), PHYS_PFN(range->start),
+				   PHYS_PFN(range->start),
 				   PHYS_PFN(range_len(range)));
 	if (pgmap->type == MEMORY_DEVICE_PRIVATE) {
 		__remove_pages(PHYS_PFN(range->start),
@@ -286,7 +287,7 @@ static int pagemap_range(struct dev_pagemap *pgmap, struct mhp_params *params,
 
 		zone = &NODE_DATA(nid)->node_zones[ZONE_DEVICE];
 		move_pfn_range_to_zone(zone, PHYS_PFN(range->start),
-				PHYS_PFN(range_len(range)), params->altmap,
+				PHYS_PFN(range_len(range)), 0, params->altmap,
 				MIGRATE_MOVABLE);
 	}
 

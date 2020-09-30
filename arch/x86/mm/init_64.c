@@ -878,6 +878,13 @@ static void __meminit free_pagetable(struct page *page, int order)
 	unsigned long magic;
 	unsigned int nr_pages = 1 << order;
 
+	/*
+	 * Runtime vmemmap pages are residing inside the memory section so
+	 * they do not have to be freed.
+	 */
+	if (PageVmemmap(page))
+		return;
+
 	/* bootmem page has reserved flag */
 	if (PageReserved(page)) {
 		__ClearPageReserved(page);
