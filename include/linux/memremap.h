@@ -15,14 +15,16 @@ struct device;
  * @free: free pages set aside in the mapping for memmap storage
  * @align: pages reserved to meet allocation alignments
  * @alloc: track pages consumed, private to vmemmap_populate()
+ * @hotplug: altmap used by hotplug (add_memory/remove_memory)
  */
 struct vmem_altmap {
-	const unsigned long base_pfn;
+	unsigned long base_pfn;
 	const unsigned long end_pfn;
 	const unsigned long reserve;
 	unsigned long free;
 	unsigned long align;
 	unsigned long alloc;
+	bool hotplug;
 };
 
 /*

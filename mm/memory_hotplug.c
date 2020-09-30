@@ -630,6 +630,7 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages)
 {
 	const unsigned long end_pfn = start_pfn + nr_pages;
 	unsigned long pfn;
+	unsigned int order;
 
 	/*
 	 * Online the pages in MAX_ORDER - 1 aligned chunks. The callback might
@@ -637,8 +638,16 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages)
 	 * later). We account all pages as being online and belonging to this
 	 * zone ("present").
 	 */
-	for (pfn = start_pfn; pfn < end_pfn; pfn += MAX_ORDER_NR_PAGES)
-		(*online_page_callback)(pfn_to_page(pfn), MAX_ORDER - 1);
+	for (pfn = start_pfn; pfn < end_pfn; pfn += (1 << order)) {
+		order = MAX_ORDER - 1;
+		/*
+		 * pfn and order need to be aligned, but when using vmemmap
+		 * first block is not.
+		 */
+		while (pfn & ((1 << order) - 1))
+			order--;
+		(*online_page_callback)(pfn_to_page(pfn), order);
+	}
 
 	/* mark all involved sections as online */
 	online_mem_sections(start_pfn, end_pfn);
@@ -797,7 +806,7 @@ struct zone * zone_for_pfn_range(int online_type, int nid, unsigned start_pfn,
 }
 
 int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
-		       int online_type, int nid)
+		       int online_type, int nid, unsigned long offset)
 {
 	unsigned long flags;
 	struct zone *zone;
@@ -807,7 +816,8 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 
 	/* We can only online full sections (e.g., SECTION_IS_ONLINE) */
 	if (WARN_ON_ONCE(!nr_pages ||
-			 !IS_ALIGNED(pfn | nr_pages, PAGES_PER_SECTION)))
+			 !IS_ALIGNED((pfn - offset) | (nr_pages + offset),
+			 PAGES_PER_SECTION)))
 		return -EINVAL;
 
 	mem_hotplug_begin();
@@ -1026,6 +1036,18 @@ static int check_hotplug_memory_range(u64 start, u64 size)
 		return -EINVAL;
 	}
 
+	/*
+	 * Make sure we remove the whole lot when using MEMHP_MEMMAP_ON_MEMORY
+	 */
+	if (mmap_on_memory_section(__pfn_to_section(PFN_DOWN(start)))) {
+		struct page *p = pfn_to_page(PFN_DOWN(start));
+		unsigned long nr_pages = size >> PAGE_SHIFT;
+
+		if ((vmemmap_head(p) != p) ||
+		    (vmemmap_nr_sections(p) * PAGES_PER_SECTION) != nr_pages)
+			return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -1044,6 +1066,7 @@ static int online_memory_block(struct memory_block *mem, void *arg)
 int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 {
 	struct mhp_params params = { .pgprot = PAGE_KERNEL };
+	struct vmem_altmap mhp_altmap = {};
 	u64 start, size;
 	bool new_node = false;
 	int ret;
@@ -1070,17 +1093,30 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 		goto error;
 	new_node = ret;
 
+	/*
+	 * Self hosted memmap array
+	 */
+	if (mhp_flags & MEMHP_MEMMAP_ON_MEMORY) {
+		mhp_altmap.free = size >> PAGE_SHIFT;
+		mhp_altmap.base_pfn = start >> PAGE_SHIFT;
+		mhp_altmap.hotplug = true;
+		params.altmap = &mhp_altmap;
+	}
+
 	/* call arch's memory hotadd */
 	ret = arch_add_memory(nid, start, size, &params);
 	if (ret < 0)
 		goto error;
 
 	/* create memory block devices after memory was added */
-	ret = create_memory_block_devices(start, size);
+	ret = create_memory_block_devices(start, size, mhp_altmap.alloc);
 	if (ret) {
 		arch_remove_memory(nid, start, size, NULL);
 		goto error;
 	}
+
+	if (mhp_flags & MEMHP_MEMMAP_ON_MEMORY)
+		mhp_mark_vmemmap_pages(params.altmap);
 
 	if (new_node) {
 		/* If sysfs file of new node can't be created, cpu on the node
@@ -1472,7 +1508,8 @@ static int count_system_ram_pages_cb(unsigned long start_pfn,
 	return 0;
 }
 
-int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
+int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
+			unsigned long offset)
 {
 	const unsigned long end_pfn = start_pfn + nr_pages;
 	unsigned long pfn, system_ram_pages = 0;
@@ -1484,7 +1521,8 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 
 	/* We can only offline full sections (e.g., SECTION_IS_ONLINE) */
 	if (WARN_ON_ONCE(!nr_pages ||
-			 !IS_ALIGNED(start_pfn | nr_pages, PAGES_PER_SECTION)))
+			 !IS_ALIGNED((start_pfn - offset) | (nr_pages + offset),
+			 PAGES_PER_SECTION)))
 		return -EINVAL;
 
 	mem_hotplug_begin();

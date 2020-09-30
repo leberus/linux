@@ -431,6 +431,31 @@ static void __init check_usemap_section_nr(int nid,
 #endif /* CONFIG_MEMORY_HOTREMOVE */
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
+void mhp_mark_vmemmap_pages(struct vmem_altmap *self)
+{
+	unsigned long pfn = self->base_pfn + self->reserve;
+	unsigned long nr_pages = self->alloc;
+	unsigned long nr_sects = self->free / PAGES_PER_SECTION;
+	unsigned long i;
+	struct page *head;
+
+	if (!nr_pages)
+		return;
+
+	memset(pfn_to_page(pfn), 0, sizeof(struct page) * nr_pages);
+
+	head = pfn_to_page(pfn);
+	for (i = 0; i < nr_pages; i++) {
+		struct page *p = head + i;
+
+		page_mapcount_reset(p);
+		__SetPageVmemmap(p);
+		p->vmemmap_head = (unsigned long)head;
+	}
+	head->vmemmap_sections = nr_sects;
+	head->vmemmap_pages = nr_pages;
+}
+
 static unsigned long __init section_map_size(void)
 {
 	return ALIGN(sizeof(struct page) * PAGES_PER_SECTION, PMD_SIZE);
@@ -647,10 +672,48 @@ void offline_mem_sections(unsigned long start_pfn, unsigned long end_pfn)
 #endif
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
+static struct page *head_mmap_on_memory = NULL;
+static bool freeing_mmap_on_memory = false;
+
 static struct page * __meminit populate_section_memmap(unsigned long pfn,
 		unsigned long nr_pages, int nid, struct vmem_altmap *altmap)
 {
 	return __populate_section_memmap(pfn, nr_pages, nid, altmap);
+}
+
+static void vmemmap_free_deferred_range(unsigned long start,
+					unsigned long end)
+{
+	unsigned long nr_pages = end - start;
+	unsigned long first_section = (unsigned long)head_mmap_on_memory;
+
+	while (start >= first_section) {
+		vmemmap_free(start, end, NULL);
+		end = start;
+		start -= nr_pages;
+	}
+	head_mmap_on_memory = NULL;
+	freeing_mmap_on_memory = false;
+}
+
+static void vmemmap_defer_free(unsigned long start, unsigned long end)
+{
+	head_mmap_on_memory->vmemmap_sections--;
+	if (!head_mmap_on_memory->vmemmap_sections)
+		vmemmap_free_deferred_range(start, end);
+}
+
+static inline bool vmemmap_should_defer_free(unsigned long pfn)
+{
+	if (mmap_on_memory_section(__pfn_to_section(pfn)) ||
+	    freeing_mmap_on_memory) {
+		if (!freeing_mmap_on_memory) {
+			head_mmap_on_memory = pfn_to_page(pfn);
+			freeing_mmap_on_memory = true;
+		}
+		return true;
+	}
+	return false;
 }
 
 static void depopulate_section_memmap(unsigned long pfn, unsigned long nr_pages,
@@ -659,7 +722,10 @@ static void depopulate_section_memmap(unsigned long pfn, unsigned long nr_pages,
 	unsigned long start = (unsigned long) pfn_to_page(pfn);
 	unsigned long end = start + nr_pages * sizeof(struct page);
 
-	vmemmap_free(start, end, altmap);
+	if (vmemmap_should_defer_free(pfn))
+		vmemmap_defer_free(start, end);
+	else
+		vmemmap_free(start, end, altmap);
 }
 static void free_map_bootmem(struct page *memmap)
 {
@@ -927,6 +993,9 @@ int __meminit sparse_add_section(int nid, unsigned long start_pfn,
 	ms = __nr_to_section(section_nr);
 	set_section_nid(section_nr, nid);
 	section_mark_present(ms);
+
+	if (altmap && altmap->hotplug)
+		flags |= SECTION_MMAP_ON_MEMORY;
 
 	/* Align memmap to section boundary in the subsection case */
 	if (section_nr_to_pfn(section_nr) != start_pfn)

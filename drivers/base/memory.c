@@ -176,20 +176,29 @@ int memory_notify(unsigned long val, void *v)
  */
 static int
 memory_block_action(unsigned long start_section_nr, unsigned long action,
-		    int online_type, int nid)
+		    int online_type, int nid, unsigned long offset)
 {
 	unsigned long start_pfn;
 	unsigned long nr_pages = PAGES_PER_SECTION * sections_per_block;
 	int ret;
 
-	start_pfn = section_nr_to_pfn(start_section_nr);
+	/*
+	 * It may be possible that depending on how much memory we add
+	 * at once, a whole memory_block is only filled with vmemmap pages.
+	 * We do not have to online/offline it if that is the case.
+	 */
+	if (nr_pages == offset)
+		return 0;
+
+	start_pfn = section_nr_to_pfn(start_section_nr) + offset;
+	nr_pages -= offset;
 
 	switch (action) {
 	case MEM_ONLINE:
-		ret = online_pages(start_pfn, nr_pages, online_type, nid);
+		ret = online_pages(start_pfn, nr_pages, online_type, nid, offset);
 		break;
 	case MEM_OFFLINE:
-		ret = offline_pages(start_pfn, nr_pages);
+		ret = offline_pages(start_pfn, nr_pages, offset);
 		break;
 	default:
 		WARN(1, KERN_WARNING "%s(%ld, %ld) unknown action: "
@@ -212,7 +221,7 @@ static int memory_block_change_state(struct memory_block *mem,
 		mem->state = MEM_GOING_OFFLINE;
 
 	ret = memory_block_action(mem->start_section_nr, to_state,
-				  mem->online_type, mem->nid);
+				  mem->online_type, mem->nid, mem->offset);
 
 	mem->state = ret ? from_state_req : to_state;
 
@@ -571,7 +580,8 @@ int register_memory(struct memory_block *memory)
 	return ret;
 }
 
-static int init_memory_block(unsigned long block_id, unsigned long state)
+static int init_memory_block(unsigned long block_id, unsigned long state,
+			     unsigned long offset)
 {
 	struct memory_block *mem;
 	unsigned long start_pfn;
@@ -591,6 +601,7 @@ static int init_memory_block(unsigned long block_id, unsigned long state)
 	start_pfn = section_nr_to_pfn(mem->start_section_nr);
 	mem->phys_device = arch_get_memory_phys_device(start_pfn);
 	mem->nid = NUMA_NO_NODE;
+	mem->offset = offset;
 
 	ret = register_memory(mem);
 
@@ -610,7 +621,7 @@ static int add_memory_block(unsigned long base_section_nr)
 	if (section_count == 0)
 		return 0;
 	return init_memory_block(memory_block_id(base_section_nr),
-				 MEM_ONLINE);
+				 MEM_ONLINE, 0);
 }
 
 static void unregister_memory(struct memory_block *memory)
@@ -632,12 +643,14 @@ static void unregister_memory(struct memory_block *memory)
  *
  * Called under device_hotplug_lock.
  */
-int create_memory_block_devices(unsigned long start, unsigned long size)
+int create_memory_block_devices(unsigned long start, unsigned long size,
+				unsigned long vmemmap_pages)
 {
 	const unsigned long start_block_id = pfn_to_block_id(PFN_DOWN(start));
 	unsigned long end_block_id = pfn_to_block_id(PFN_DOWN(start + size));
 	struct memory_block *mem;
 	unsigned long block_id;
+	unsigned long memblk_pages = memory_block_size_bytes() >> PAGE_SHIFT;
 	int ret = 0;
 
 	if (WARN_ON_ONCE(!IS_ALIGNED(start, memory_block_size_bytes()) ||
@@ -645,7 +658,17 @@ int create_memory_block_devices(unsigned long start, unsigned long size)
 		return -EINVAL;
 
 	for (block_id = start_block_id; block_id != end_block_id; block_id++) {
-		ret = init_memory_block(block_id, MEM_OFFLINE);
+		unsigned long offset = 0;
+		if (vmemmap_pages) {
+			if (vmemmap_pages < memblk_pages) {
+				offset = vmemmap_pages;
+				vmemmap_pages = 0;
+			} else {
+				offset = memblk_pages;
+				vmemmap_pages -= memblk_pages;
+			}
+		}
+		ret = init_memory_block(block_id, MEM_OFFLINE, offset);
 		if (ret)
 			break;
 	}
