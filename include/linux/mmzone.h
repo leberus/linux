@@ -1291,7 +1291,8 @@ extern size_t mem_section_usage_size(void);
 #define SECTION_HAS_MEM_MAP	(1UL<<1)
 #define SECTION_IS_ONLINE	(1UL<<2)
 #define SECTION_IS_EARLY	(1UL<<3)
-#define SECTION_MAP_LAST_BIT	(1UL<<4)
+#define SECTION_MMAP_ON_MEMORY	(1UL<<4)
+#define SECTION_MAP_LAST_BIT	(1UL<<5)
 #define SECTION_MAP_MASK	(~(SECTION_MAP_LAST_BIT-1))
 #define SECTION_NID_SHIFT	3
 
@@ -1320,6 +1321,11 @@ static inline int valid_section(struct mem_section *section)
 static inline int early_section(struct mem_section *section)
 {
 	return (section && (section->section_mem_map & SECTION_IS_EARLY));
+}
+
+static inline int mmap_on_memory_section(struct mem_section *section)
+{
+	return (section && (section->section_mem_map & SECTION_MMAP_ON_MEMORY));
 }
 
 static inline int valid_section_nr(unsigned long nr)
