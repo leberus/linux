@@ -646,6 +646,8 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages)
 		 */
 		while (pfn & ((1 << order) - 1))
 			order--;
+		pr_info("%s: pfn: %lx - %lx nr_pages: %ld order: %u\n",
+			__func__,pfn, pfn + (1 << order), (1 << order), order);
 		(*online_page_callback)(pfn_to_page(pfn), order);
 	}
 
@@ -813,6 +815,9 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 	int need_zonelists_rebuild = 0;
 	int ret;
 	struct memory_notify arg;
+
+	pr_info("%s: pfn: %lx - %lx offset: %ld\n", __func__, pfn,
+		 pfn + nr_pages, offset);
 
 	/* We can only online full sections (e.g., SECTION_IS_ONLINE) */
 	if (WARN_ON_ONCE(!nr_pages ||
@@ -1101,6 +1106,8 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 		mhp_altmap.base_pfn = start >> PAGE_SHIFT;
 		mhp_altmap.hotplug = true;
 		params.altmap = &mhp_altmap;
+		pr_info("%s: MEMHP_MEMMAP_ON_MEMORY: mhp_altmap.free: %ld mhp_altmap.base_pfn: %lx\n",
+			__func__, mhp_altmap.free, mhp_altmap.base_pfn);
 	}
 
 	/* call arch's memory hotadd */
@@ -1518,6 +1525,10 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 	struct memory_notify arg;
 	int ret, node;
 	char *reason;
+
+	pr_info("%s: pfn: %lx - %lx offset: %ld\n", __func__, start_pfn,
+                 start_pfn + nr_pages, offset);
+
 
 	/* We can only offline full sections (e.g., SECTION_IS_ONLINE) */
 	if (WARN_ON_ONCE(!nr_pages ||

@@ -602,6 +602,8 @@ static int init_memory_block(unsigned long block_id, unsigned long state,
 	mem->phys_device = arch_get_memory_phys_device(start_pfn);
 	mem->nid = NUMA_NO_NODE;
 	mem->offset = offset;
+	if (offset)
+		pr_info("%s: block_id: %ld mem->offset: %ld\n", __func__, block_id, mem->offset);
 
 	ret = register_memory(mem);
 

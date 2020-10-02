@@ -444,6 +444,9 @@ void mhp_mark_vmemmap_pages(struct vmem_altmap *self)
 
 	memset(pfn_to_page(pfn), 0, sizeof(struct page) * nr_pages);
 
+	pr_info("%s: %px - %px\n", __func__, pfn_to_page(pfn),
+		 pfn_to_page(pfn + nr_pages));
+
 	head = pfn_to_page(pfn);
 	for (i = 0; i < nr_pages; i++) {
 		struct page *p = head + i;
@@ -688,6 +691,7 @@ static void vmemmap_free_deferred_range(unsigned long start,
 	unsigned long first_section = (unsigned long)head_mmap_on_memory;
 
 	while (start >= first_section) {
+		pr_info("%s: vmemmap_free: %lx - %lx\n", __func__, start, end);
 		vmemmap_free(start, end, NULL);
 		end = start;
 		start -= nr_pages;
@@ -710,6 +714,8 @@ static inline bool vmemmap_should_defer_free(unsigned long pfn)
 		if (!freeing_mmap_on_memory) {
 			head_mmap_on_memory = pfn_to_page(pfn);
 			freeing_mmap_on_memory = true;
+			pr_info("%s: MMAP_ON_MEMORY_SECTION found: %px\n",
+				 __func__, head_mmap_on_memory);
 		}
 		return true;
 	}

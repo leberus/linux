@@ -1526,6 +1526,8 @@ static int __meminit vmemmap_populate_hugepages(unsigned long start,
 			void *p;
 
 			p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
+			if (altmap)
+				pr_info("%s: p: %px - %px (phys: %lx - %lx)\n", __func__, p, p + PMD_SIZE, __pa(p), __pa(p + PMD_SIZE));
 			if (p) {
 				pte_t entry;
 
