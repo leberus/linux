@@ -1923,7 +1923,7 @@ int soft_offline_page(unsigned long pfn)
 
 retry:
 	get_online_mems();
-	ret = get_any_page(page, pfn);
+	ret = get_any_page(page);
 	put_online_mems();
 
 	if (ret > 0) {
