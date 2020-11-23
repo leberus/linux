@@ -612,6 +612,7 @@ static int dlpar_add_lmb(struct drmem_lmb *lmb)
 {
 	unsigned long block_sz;
 	int nid, rc;
+	mhp_t mhp_flags = MHP_NONE;
 
 	if (lmb->flags & DRCONF_MEM_ASSIGNED)
 		return -EINVAL;
@@ -629,8 +630,10 @@ static int dlpar_add_lmb(struct drmem_lmb *lmb)
 	if (nid < 0 || !node_possible(nid))
 		nid = first_online_node;
 
+	if (mhp_supports_memmap_on_memory(block_sz))
+		mhp_flags |= MHP_MEMMAP_ON_MEMORY;
 	/* Add the memory */
-	rc = __add_memory(nid, lmb->base_addr, block_sz, MHP_NONE);
+	rc = __add_memory(nid, lmb->base_addr, block_sz, mhp_flags);
 	if (rc) {
 		invalidate_lmb_associativity_index(lmb);
 		return rc;
