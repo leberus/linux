@@ -1011,6 +1011,20 @@ static int online_memory_block(struct memory_block *mem, void *arg)
 	return device_online(&mem->dev);
 }
 
+bool __weak arch_support_memmap_on_memory(void)
+{
+	return false;
+}
+
+bool mhp_supports_memmap_on_memory(unsigned long size)
+{
+	if (!arch_support_memmap_on_memory() ||
+	    !IS_ENABLED(CONFIG_SPARSEMEM_VMEMMAP) ||
+	    size > memory_block_size_bytes())
+		return false;
+	return true;
+}
+
 /*
  * NOTE: The caller must call lock_device_hotplug() to serialize hotplug
  * and online/offline operations (triggered e.g. by sysfs).
@@ -1045,6 +1059,16 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 	if (ret < 0)
 		goto error;
 	new_node = ret;
+
+	/*
+	 * Return -EINVAL if caller specified MHP_MEMMAP_ON_MEMORY and we do
+	 * not support it.
+	 */
+	if ((mhp_flags & MHP_MEMMAP_ON_MEMORY) &&
+	    !mhp_supports_memmap_on_memory(size)) {
+		ret = -EINVAL;
+		goto error;
+	}
 
 	/* call arch's memory hotadd */
 	ret = arch_add_memory(nid, start, size, &params);

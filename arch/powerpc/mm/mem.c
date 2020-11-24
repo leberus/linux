@@ -181,6 +181,11 @@ void __ref arch_remove_memory(int nid, u64 start, u64 size,
 	__remove_pages(start_pfn, nr_pages, altmap);
 	arch_remove_linear_mapping(start, size);
 }
+
+bool arch_support_memmap_on_memory(void)
+{
+	return true;
+}
 #endif
 
 #ifndef CONFIG_NEED_MULTIPLE_NODES

@@ -1454,6 +1454,11 @@ static bool inside_linear_region(u64 start, u64 size)
 	       (start + size - 1) <= __pa(PAGE_END - 1);
 }
 
+bool arch_support_memmap_on_memory(void)
+{
+	return true;
+}
+
 int arch_add_memory(int nid, u64 start, u64 size,
 		    struct mhp_params *params)
 {
