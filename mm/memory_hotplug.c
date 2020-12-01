@@ -42,6 +42,8 @@
 #include "internal.h"
 #include "shuffle.h"
 
+static bool memmap_on_memory_enabled __read_mostly = false;
+
 /*
  * online_page_callback contains pointer to current page onlining function.
  * Initially it is generic_online_page(). If it is required it could be
@@ -1034,7 +1036,7 @@ bool __weak arch_support_memmap_on_memory(void)
 
 bool mhp_supports_memmap_on_memory(unsigned long size)
 {
-	if (!arch_support_memmap_on_memory() ||
+	if (!memmap_on_memory_enabled || !arch_support_memmap_on_memory() ||
 	    !IS_ENABLED(CONFIG_SPARSEMEM_VMEMMAP) ||
 	    size > memory_block_size_bytes())
 		return false;
@@ -1421,6 +1423,13 @@ static int __init cmdline_parse_movable_node(char *p)
 	return 0;
 }
 early_param("movable_node", cmdline_parse_movable_node);
+
+static int __init cmdline_parse_memmap_on_memory(char *p)
+{
+	memmap_on_memory_enabled = true;
+	return 0;
+}
+early_param("mhp_memmap_on_memory", cmdline_parse_memmap_on_memory);
 
 /* check which state of node_states will be changed when offline memory */
 static void node_states_check_changes_offline(unsigned long nr_pages,
