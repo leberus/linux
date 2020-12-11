@@ -42,6 +42,8 @@
 #include "internal.h"
 #include "shuffle.h"
 
+static bool memmap_on_memory_enabled;
+
 /*
  * online_page_callback contains pointer to current page onlining function.
  * Initially it is generic_online_page(). If it is required it could be
@@ -606,10 +608,23 @@ void generic_online_page(struct page *page, unsigned int order)
 }
 EXPORT_SYMBOL_GPL(generic_online_page);
 
-static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages)
+static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages,
+			       unsigned long buddy_start_pfn)
 {
 	const unsigned long end_pfn = start_pfn + nr_pages;
-	unsigned long pfn;
+	unsigned long pfn = buddy_start_pfn;
+	unsigned int order = MAX_ORDER - 1;
+
+	/*
+	 * When using memmap_on_memory, the range might be unaligned as the
+	 * first pfns are used for vmemmap pages. Align it in case we need to.
+	 */
+	if (pfn & ((1 << order) - 1)) {
+		while (pfn & ((1 << order) - 1))
+			order--;
+		(*online_page_callback)(pfn_to_page(pfn), order);
+		pfn += 1 << order;
+	}
 
 	/*
 	 * Online the pages in MAX_ORDER - 1 aligned chunks. The callback might
@@ -617,7 +632,7 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages)
 	 * later). We account all pages as being online and belonging to this
 	 * zone ("present").
 	 */
-	for (pfn = start_pfn; pfn < end_pfn; pfn += MAX_ORDER_NR_PAGES)
+	for (; pfn < end_pfn; pfn += MAX_ORDER_NR_PAGES)
 		(*online_page_callback)(pfn_to_page(pfn), MAX_ORDER - 1);
 
 	/* mark all involved sections as online */
@@ -777,9 +792,9 @@ struct zone * zone_for_pfn_range(int online_type, int nid, unsigned start_pfn,
 }
 
 int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
-		       int online_type, int nid)
+		       unsigned long nr_vmemmap_pages, int online_type, int nid)
 {
-	unsigned long flags;
+	unsigned long flags, buddy_start_pfn, buddy_nr_pages;
 	struct zone *zone;
 	int need_zonelists_rebuild = 0;
 	int ret;
@@ -790,11 +805,18 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 			 !IS_ALIGNED(pfn | nr_pages, PAGES_PER_SECTION)))
 		return -EINVAL;
 
+	buddy_start_pfn = pfn + nr_vmemmap_pages;
+	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
+
 	mem_hotplug_begin();
 
 	/* associate pfn range with the zone */
 	zone = zone_for_pfn_range(online_type, nid, pfn, nr_pages);
-	move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_ISOLATE);
+	if (nr_vmemmap_pages)
+		move_pfn_range_to_zone(zone, pfn, nr_vmemmap_pages, NULL,
+				       MIGRATE_UNMOVABLE);
+	move_pfn_range_to_zone(zone, buddy_start_pfn, buddy_nr_pages, NULL,
+			       MIGRATE_ISOLATE);
 
 	arg.start_pfn = pfn;
 	arg.nr_pages = nr_pages;
@@ -810,7 +832,7 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 	 * onlining, such that undo_isolate_page_range() works correctly.
 	 */
 	spin_lock_irqsave(&zone->lock, flags);
-	zone->nr_isolate_pageblock += nr_pages / pageblock_nr_pages;
+	zone->nr_isolate_pageblock += buddy_nr_pages / pageblock_nr_pages;
 	spin_unlock_irqrestore(&zone->lock, flags);
 
 	/*
@@ -823,7 +845,7 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 		setup_zone_pageset(zone);
 	}
 
-	online_pages_range(pfn, nr_pages);
+	online_pages_range(pfn, nr_pages, buddy_start_pfn);
 	zone->present_pages += nr_pages;
 
 	pgdat_resize_lock(zone->zone_pgdat, &flags);
@@ -836,7 +858,9 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 	zone_pcp_update(zone);
 
 	/* Basic onlining is complete, allow allocation of onlined pages. */
-	undo_isolate_page_range(pfn, pfn + nr_pages, MIGRATE_MOVABLE);
+	undo_isolate_page_range(buddy_start_pfn,
+				buddy_start_pfn + buddy_nr_pages,
+				MIGRATE_MOVABLE);
 
 	/*
 	 * Freshly onlined pages aren't shuffled (e.g., all pages are placed to
@@ -1011,6 +1035,12 @@ static int online_memory_block(struct memory_block *mem, void *arg)
 	return device_online(&mem->dev);
 }
 
+bool mhp_supports_memmap_on_memory(unsigned long size)
+{
+	return memmap_on_memory_enabled &&
+	       size == memory_block_size_bytes();
+}
+
 /*
  * NOTE: The caller must call lock_device_hotplug() to serialize hotplug
  * and online/offline operations (triggered e.g. by sysfs).
@@ -1020,6 +1050,7 @@ static int online_memory_block(struct memory_block *mem, void *arg)
 int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 {
 	struct mhp_params params = { .pgprot = PAGE_KERNEL };
+	struct vmem_altmap mhp_altmap = {};
 	u64 start, size;
 	bool new_node = false;
 	int ret;
@@ -1046,13 +1077,26 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 		goto error;
 	new_node = ret;
 
+	/*
+	 * Self hosted memmap array
+	 */
+	if (mhp_flags & MHP_MEMMAP_ON_MEMORY) {
+		if (!mhp_supports_memmap_on_memory(size)) {
+			ret = -EINVAL;
+			goto error;
+		}
+		mhp_altmap.free = PHYS_PFN(size);
+		mhp_altmap.base_pfn = PHYS_PFN(start);
+		params.altmap = &mhp_altmap;
+	}
+
 	/* call arch's memory hotadd */
 	ret = arch_add_memory(nid, start, size, &params);
 	if (ret < 0)
 		goto error;
 
 	/* create memory block devices after memory was added */
-	ret = create_memory_block_devices(start, size);
+	ret = create_memory_block_devices(start, size, mhp_altmap.alloc);
 	if (ret) {
 		arch_remove_memory(nid, start, size, NULL);
 		goto error;
@@ -1448,10 +1492,11 @@ static int count_system_ram_pages_cb(unsigned long start_pfn,
 	return 0;
 }
 
-int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
+int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
+			unsigned long nr_vmemmap_pages)
 {
 	const unsigned long end_pfn = start_pfn + nr_pages;
-	unsigned long pfn, system_ram_pages = 0;
+	unsigned long pfn, buddy_start_pfn, buddy_nr_pages, system_ram_pages = 0;
 	unsigned long flags;
 	struct zone *zone;
 	struct memory_notify arg;
@@ -1462,6 +1507,9 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 	if (WARN_ON_ONCE(!nr_pages ||
 			 !IS_ALIGNED(start_pfn | nr_pages, PAGES_PER_SECTION)))
 		return -EINVAL;
+
+	buddy_start_pfn = start_pfn + nr_vmemmap_pages;
+	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
 
 	mem_hotplug_begin();
 
@@ -1498,7 +1546,7 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 	zone_pcp_disable(zone);
 
 	/* set above range as isolated */
-	ret = start_isolate_page_range(start_pfn, end_pfn,
+	ret = start_isolate_page_range(buddy_start_pfn, end_pfn,
 				       MIGRATE_MOVABLE,
 				       MEMORY_OFFLINE | REPORT_FAILURE);
 	if (ret) {
@@ -1518,7 +1566,7 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 	}
 
 	do {
-		pfn = start_pfn;
+		pfn = buddy_start_pfn;
 		do {
 			if (signal_pending(current)) {
 				ret = -EINTR;
@@ -1549,18 +1597,18 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 		 * offlining actually in order to make hugetlbfs's object
 		 * counting consistent.
 		 */
-		ret = dissolve_free_huge_pages(start_pfn, end_pfn);
+		ret = dissolve_free_huge_pages(buddy_start_pfn, end_pfn);
 		if (ret) {
 			reason = "failure to dissolve huge pages";
 			goto failed_removal_isolated;
 		}
 
-		ret = test_pages_isolated(start_pfn, end_pfn, MEMORY_OFFLINE);
+		ret = test_pages_isolated(buddy_start_pfn, end_pfn, MEMORY_OFFLINE);
 
 	} while (ret);
 
 	/* Mark all sections offline and remove free pages from the buddy. */
-	__offline_isolated_pages(start_pfn, end_pfn);
+	__offline_isolated_pages(start_pfn, end_pfn, buddy_start_pfn);
 	pr_debug("Offlined Pages %ld\n", nr_pages);
 
 	/*
@@ -1569,13 +1617,13 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages)
 	 * of isolated pageblocks, memory onlining will properly revert this.
 	 */
 	spin_lock_irqsave(&zone->lock, flags);
-	zone->nr_isolate_pageblock -= nr_pages / pageblock_nr_pages;
+	zone->nr_isolate_pageblock -= buddy_nr_pages / pageblock_nr_pages;
 	spin_unlock_irqrestore(&zone->lock, flags);
 
 	zone_pcp_enable(zone);
 
 	/* removal success */
-	adjust_managed_page_count(pfn_to_page(start_pfn), -nr_pages);
+	adjust_managed_page_count(pfn_to_page(start_pfn), -buddy_nr_pages);
 	zone->present_pages -= nr_pages;
 
 	pgdat_resize_lock(zone->zone_pgdat, &flags);
@@ -1633,6 +1681,14 @@ static int check_memblock_offlined_cb(struct memory_block *mem, void *arg)
 		return -EBUSY;
 	}
 	return 0;
+}
+
+static int get_nr_vmemmap_pages_cb(struct memory_block *mem, void *arg)
+{
+	unsigned long *nr_vmemmap_pages = (unsigned long *)arg;
+
+	*nr_vmemmap_pages += mem->nr_vmemmap_pages;
+	return mem->nr_vmemmap_pages;
 }
 
 static int check_cpu_on_node(pg_data_t *pgdat)
@@ -1709,6 +1765,9 @@ EXPORT_SYMBOL(try_offline_node);
 static int __ref try_remove_memory(int nid, u64 start, u64 size)
 {
 	int rc = 0;
+	struct vmem_altmap mhp_altmap = {};
+	struct vmem_altmap *altmap = NULL;
+	unsigned long nr_vmemmap_pages = 0;
 
 	BUG_ON(check_hotplug_memory_range(start, size));
 
@@ -1721,6 +1780,31 @@ static int __ref try_remove_memory(int nid, u64 start, u64 size)
 	if (rc)
 		return rc;
 
+	/*
+	 * We only support removing memory added with MHP_MEMMAP_ON_MEMORY in
+	 * the same granularity it was added - a single memory block.
+	 */
+	if (memmap_on_memory_enabled) {
+		walk_memory_blocks(start, size, &nr_vmemmap_pages,
+					 get_nr_vmemmap_pages_cb);
+		if (nr_vmemmap_pages) {
+			if (size != memory_block_size_bytes()) {
+				pr_warn("Refuse to remove %#llx - %#llx,"
+					"wrong granularity\n",
+					 start, start + size);
+				return -EINVAL;
+			}
+
+			/*
+			 * Let remove_pmd_table->free_hugepage_table
+			 * do the right thing if we used vmem_altmap
+			 * when hot-adding the range.
+			 */
+			mhp_altmap.alloc = nr_vmemmap_pages;
+			altmap = &mhp_altmap;
+		}
+	}
+
 	/* remove memmap entry */
 	firmware_map_remove(start, start + size, "System RAM");
 
@@ -1732,7 +1816,7 @@ static int __ref try_remove_memory(int nid, u64 start, u64 size)
 
 	mem_hotplug_begin();
 
-	arch_remove_memory(nid, start, size, NULL);
+	arch_remove_memory(nid, start, size, altmap);
 
 	if (IS_ENABLED(CONFIG_ARCH_KEEP_MEMBLOCK)) {
 		memblock_free(start, size);
