@@ -615,8 +615,10 @@ void generic_online_page(struct page *page, unsigned int order)
 	 * so we should map it first. This is better than introducing a special
 	 * case in page freeing fast path.
 	 */
-	if (debug_pagealloc_enabled_static())
+	if (debug_pagealloc_enabled_static()) {
+		pr_info("%s: kernel_map_pages\n", __func__);
 		kernel_map_pages(page, 1 << order, 1);
+	}
 	__free_pages_core(page, order);
 	totalram_pages_add(1UL << order);
 #ifdef CONFIG_HIGHMEM
@@ -641,6 +643,8 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages,
 	if (pfn & ((1 << order) - 1)) {
 		while (pfn & ((1 << order) - 1))
 			order--;
+		pr_info("%s: page: %px - %px order: %d\n", __func__, pfn_to_page(pfn),
+			 pfn_to_page(pfn + (1 << order)), order);
 		(*online_page_callback)(pfn_to_page(pfn), order);
 		pfn += 1 << order;
 	}
@@ -651,8 +655,11 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages,
 	 * later). We account all pages as being online and belonging to this
 	 * zone ("present").
 	 */
-	for (; pfn < end_pfn; pfn += MAX_ORDER_NR_PAGES)
+	for (; pfn < end_pfn; pfn += MAX_ORDER_NR_PAGES) {
 		(*online_page_callback)(pfn_to_page(pfn), MAX_ORDER - 1);
+		pr_info("%s: page: %px - %px: %d\n", __func__, pfn_to_page(pfn),
+			 pfn_to_page(pfn + (1 << order)), MAX_ORDER - 1);
+	}
 
 	/* mark all involved sections as online */
 	online_mem_sections(start_pfn, end_pfn);
@@ -741,6 +748,9 @@ void __ref move_pfn_range_to_zone(struct zone *zone, unsigned long start_pfn,
 	resize_pgdat_range(pgdat, start_pfn, nr_pages);
 	pgdat_resize_unlock(pgdat, &flags);
 
+	pr_info("%s: %lx (%ld) mgt: %d\n",
+		 __func__, start_pfn, nr_pages, migratetype);
+
 	/*
 	 * TODO now we have a visible range of pages which are not associated
 	 * with their zone properly. Not nice but set_pfnblock_flags_mask
@@ -826,6 +836,10 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 
 	buddy_start_pfn = pfn + nr_vmemmap_pages;
 	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
+
+	pr_info("%s: %lx - %lx (%lx - %lx: %ld)\n", __func__, pfn, pfn + nr_pages,
+		 buddy_start_pfn, buddy_start_pfn + buddy_nr_pages,
+		 nr_vmemmap_pages);
 
 	mem_hotplug_begin();
 
@@ -1056,6 +1070,10 @@ static int online_memory_block(struct memory_block *mem, void *arg)
 
 bool mhp_supports_memmap_on_memory(unsigned long size)
 {
+	pr_info("%s: CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE: %d\n", __func__, IS_ENABLED(CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE));
+	pr_info("%s: memmap_on_memory_enabled: %d\n", __func__, memmap_on_memory_enabled);
+	pr_info("%s: memory_block_size_bytes: %d\n", __func__, size == memory_block_size_bytes());
+
 	return IS_ENABLED(CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE) &&
 	       memmap_on_memory_enabled &&
 	       size == memory_block_size_bytes();
@@ -1111,6 +1129,7 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 	 * Self hosted memmap array
 	 */
 	if (mhp_flags & MHP_MEMMAP_ON_MEMORY) {
+		pr_info("%s: MHP_MEMMAP_ON_MEMORY enabled\n", __func__);
 		mhp_altmap.free = size >> PAGE_SHIFT;
 		mhp_altmap.base_pfn = start >> PAGE_SHIFT;
 		params.altmap = &mhp_altmap;
@@ -1537,6 +1556,10 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 	buddy_start_pfn = start_pfn + nr_vmemmap_pages;
 	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
 
+	pr_info("%s: %lx - %lx (%lx - %lx: %ld)\n", __func__, start_pfn, start_pfn + nr_pages,
+                 buddy_start_pfn, buddy_start_pfn + buddy_nr_pages,
+                 nr_vmemmap_pages);
+
 	mem_hotplug_begin();
 
 	/*
@@ -1840,6 +1863,7 @@ static int __ref try_remove_memory(int nid, u64 start, u64 size)
 				 */
 				mhp_altmap.alloc = nr_vmemmap_pages;
 				altmap = &mhp_altmap;
+				pr_info("%s: nr_vmemmap_pages: %ld\n", __func__, nr_vmemmap_pages);
 			}
 		}
 	}

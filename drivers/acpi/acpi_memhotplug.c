@@ -195,8 +195,12 @@ static int acpi_memory_enable_device(struct acpi_memory_device *mem_device)
 		if (node < 0)
 			node = memory_add_physaddr_to_nid(info->start_addr);
 
-		if (mhp_supports_memmap_on_memory(info->length))
+		if (mhp_supports_memmap_on_memory(info->length)) {
+			pr_info("%s: supports MHP_MEMMAP_ON_MEMORY\n", __func__);
 			mhp_flags |= MHP_MEMMAP_ON_MEMORY;
+		} else {
+			pr_info("%s: does not MHP_MEMMAP_ON_MEMORY\n", __func__);
+		}
 		result = __add_memory(node, info->start_addr, info->length,
 				      mhp_flags);
 

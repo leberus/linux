@@ -440,6 +440,7 @@ unsigned long vmem_altmap_offset(struct vmem_altmap *altmap)
 
 void vmem_altmap_free(struct vmem_altmap *altmap, unsigned long nr_pfns)
 {
+	pr_info("%s: free: %ld\n", __func__, nr_pfns);
 	altmap->alloc -= nr_pfns;
 }
 
