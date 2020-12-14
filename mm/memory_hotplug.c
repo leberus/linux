@@ -42,7 +42,27 @@
 #include "internal.h"
 #include "shuffle.h"
 
-static bool memmap_on_memory_enabled;
+/*
+ * memory_hotplug.memmap_on_memory parameter
+ */
+static bool memmap_on_memory_enabled __ro_after_init;
+
+static int memmap_on_memory_show(char *buffer, const struct kernel_param *kp)
+{
+	return sprintf(buffer, "%s\n",
+		       memmap_on_memory_enabled ? "on" : "off");
+}
+
+static __meminit int memmap_on_memory_store(const char *val,
+					    const struct kernel_param *kp)
+{
+	if (!IS_ENABLED(CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE))
+		return -EINVAL;
+
+	return param_set_bool(val, kp);
+}
+module_param_call(memmap_on_memory, memmap_on_memory_store,
+		  memmap_on_memory_show, &memmap_on_memory_enabled, 0400);
 
 /*
  * online_page_callback contains pointer to current page onlining function.
