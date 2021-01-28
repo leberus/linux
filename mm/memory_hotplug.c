@@ -56,7 +56,12 @@ static int memmap_on_memory_show(char *buffer, const struct kernel_param *kp)
 static __meminit int memmap_on_memory_store(const char *val,
 					    const struct kernel_param *kp)
 {
-	if (!IS_ENABLED(CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE))
+	/*
+	 * Fence it off in case our arch does not support the feature or
+	 * the struct page size is not multiple of PMD.
+	 */
+	if (!IS_ENABLED(CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE) ||
+	    (PMD_SIZE % sizeof(struct page)))
 		return -EINVAL;
 
 	return param_set_bool(val, kp);
