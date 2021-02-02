@@ -57,11 +57,13 @@ static __meminit int memmap_on_memory_store(const char *val,
 					    const struct kernel_param *kp)
 {
 	/*
-	 * Fence it off in case our arch does not support the feature or
-	 * the struct page size is not multiple of PMD.
+	 * Fence it off in case our arch does not support the feature,
+	 * the struct page size is not multiple of PMD, or nr_vmemmap_pages
+	 * is not pageblock aligned.
 	 */
 	if (!IS_ENABLED(CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE) ||
-	    (PMD_SIZE % sizeof(struct page)))
+	    (PMD_SIZE % sizeof(struct page)) ||
+	    ((SECTION_SIZE - PMD_SIZE) % (1UL << pageblock_nr_pages)))
 		return -EINVAL;
 
 	return param_set_bool(val, kp);
