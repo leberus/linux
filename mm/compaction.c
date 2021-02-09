@@ -941,6 +941,22 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 		}
 
 		/*
+		 * Handle hugetlb pages only when coming from alloc_contig
+		 */
+		if (PageHuge(page) && cc->alloc_contig) {
+			if (page_count(page)) {
+				/*
+				 * Hugetlb page in-use. Isolate and migrate.
+				 */
+				if (isolate_huge_page(page, &cc->migratepages)) {
+					low_pfn += compound_nr(page) - 1;
+					goto isolate_success_no_list;
+				}
+			}
+			goto isolate_fail;
+		}
+
+		/*
 		 * Check may be lockless but that's ok as we recheck later.
 		 * It's possible to migrate LRU and non-lru movable pages.
 		 * Skip any other type of page
@@ -1041,6 +1057,7 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 
 isolate_success:
 		list_add(&page->lru, &cc->migratepages);
+isolate_success_no_list:
 		cc->nr_migratepages += compound_nr(page);
 		nr_isolated += compound_nr(page);
 
