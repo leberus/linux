@@ -58,6 +58,28 @@ static __meminit int memmap_on_memory_store(const char *val,
 {
 	unsigned long pageblock_size = PFN_PHYS(pageblock_nr_pages);
 
+	if (!IS_ENABLED(CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE)) {
+                pr_info("%s: CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE not enabled\n", __func__);
+        } else {
+                pr_info("%s: CONFIG_ARCH_MHP_MEMMAP_ON_MEMORY_ENABLE enabled\n", __func__);
+        }
+
+        if (PMD_SIZE % sizeof(struct page)) {
+                pr_info("%s: struct page size not multiple\n", __func__);
+        } else {
+                pr_info("%s: struct page size multiple\n", __func__);
+        }
+
+	if (!(MIN_MEMORY_BLOCK_SIZE - PMD_SIZE)) {
+		pr_info("%s: MIN_MEMORY_BLOCK_SIZE - PMD_SIZE = 0\n", __func__);
+	}
+
+        if ((MIN_MEMORY_BLOCK_SIZE - PMD_SIZE) % pageblock_size) {
+                pr_info("%s: pageblock alignment fail\n", __func__);
+        } else {
+                pr_info("%s: pageblock alignment ok\n", __func__);
+        }
+
 	/*
 	 * Fence it off in case our arch does not support the feature,
 	 * the struct page size is not multiple of PMD, or nr_vmemmap_pages
@@ -681,6 +703,7 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages,
 	 * first pfns are used for vmemmap pages. Align it in case we need to.
 	 */
 	if (pfn & ((1 << (MAX_ORDER - 1)) - 1)) {
+		pr_info("%s: [una] online_pages_range: %u (%ld)\n", __func__, pageblock_order, 1UL << pageblock_order);
 		(*online_page_callback)(pfn_to_page(pfn), pageblock_order);
 		pfn += 1 << pageblock_order;
 	}
@@ -691,8 +714,10 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages,
 	 * later). We account all pages as being online and belonging to this
 	 * zone ("present").
 	 */
-	for (; pfn < end_pfn; pfn += MAX_ORDER_NR_PAGES)
+	for (; pfn < end_pfn; pfn += MAX_ORDER_NR_PAGES) {
+		pr_info("%s: [ali] online_pages_range: %u (%ld)\n", __func__, MAX_ORDER - 1, 1UL << (MAX_ORDER - 1));
 		(*online_page_callback)(pfn_to_page(pfn), MAX_ORDER - 1);
+	}
 
 	/* mark all involved sections as online */
 	online_mem_sections(start_pfn, end_pfn);
@@ -887,6 +912,10 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 
 	buddy_start_pfn = pfn + nr_vmemmap_pages;
 	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
+
+	pr_info("%s: start: %lx - %lx (%ld) buddy_start: %lx (%ld) vmemmap: %ld\n",
+                 __func__, pfn, pfn + nr_pages, nr_pages, buddy_start_pfn, buddy_nr_pages,
+		 nr_vmemmap_pages);
 
 	mem_hotplug_begin();
 
@@ -1174,6 +1203,8 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 	ret = arch_add_memory(nid, start, size, &params);
 	if (ret < 0)
 		goto error;
+
+	pr_info("%s: mhp_altmap.alloc: %ld\n", __func__, mhp_altmap.alloc);
 
 	/* create memory block devices after memory was added */
 	ret = create_memory_block_devices(start, size, mhp_altmap.alloc);
@@ -1653,6 +1684,10 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 	buddy_start_pfn = start_pfn + nr_vmemmap_pages;
 	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
 
+	pr_info("%s: start: %lx - %lx (%ld) buddy_start: %lx (%ld) vmemmap_pages: %ld\n",
+		 __func__, start_pfn, end_pfn, nr_pages, buddy_start_pfn, buddy_nr_pages,
+		 nr_vmemmap_pages);
+
 	mem_hotplug_begin();
 
 	/*
@@ -1942,6 +1977,7 @@ static int __ref try_remove_memory(int nid, u64 start, u64 size)
 			 * do the right thing if we used vmem_altmap
 			 * when hot-adding the range.
 			 */
+			pr_info("%s: nr_vmemmap_pages: %ld\n", __func__, nr_vmemmap_pages);
 			mhp_altmap.alloc = nr_vmemmap_pages;
 			altmap = &mhp_altmap;
 		}

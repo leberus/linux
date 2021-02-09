@@ -896,10 +896,12 @@ static void __meminit free_pagetable(struct page *page, int order)
 static void __meminit free_hugepage_table(struct page *page,
 		struct vmem_altmap *altmap)
 {
-	if (altmap)
+	if (altmap) {
+		pr_info("%s: vmem_altmap_free nr_pages: %ld\n", __func__, PMD_SIZE / PAGE_SIZE);
 		vmem_altmap_free(altmap, PMD_SIZE / PAGE_SIZE);
-	else
+	} else {
 		free_pagetable(page, get_order(PMD_SIZE));
+	}
 }
 
 static void __meminit free_pte_table(pte_t *pte_start, pmd_t *pmd)

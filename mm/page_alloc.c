@@ -6919,6 +6919,10 @@ static void __init free_area_init_core(struct pglist_data *pgdat)
 	enum zone_type j;
 	int nid = pgdat->node_id;
 
+	pr_info("%s: struct_size: %ld PMD_SIZE: %ld pageblock_size: %ld SECTION_SIZE: %ld\n",
+		 __func__, sizeof(struct page), PMD_SIZE, pageblock_nr_pages << PAGE_SHIFT,
+		1UL << SECTION_SIZE_BITS);
+
 	pgdat_init_internals(pgdat);
 	pgdat->per_cpu_nodestats = &boot_nodestats;
 
