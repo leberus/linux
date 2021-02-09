@@ -2253,6 +2253,41 @@ static void restore_reserve_on_error(struct hstate *h,
 	}
 }
 
+bool alloc_and_dissolve_huge_page(struct page *page)
+{
+	NODEMASK_ALLOC(nodemask_t, nodes_allowed, GFP_KERNEL);
+	struct page *head;
+	struct hstate *h;
+	bool ret = false;
+	int nid;
+
+	if (!nodes_allowed)
+		return ret;
+
+	spin_lock(&hugetlb_lock);
+	head = compound_head(page);
+	h = page_hstate(head);
+	nid = page_to_nid(head);
+	spin_unlock(&hugetlb_lock);
+
+	init_nodemask_of_node(nodes_allowed, nid);
+
+	/*
+	 * Before dissolving the page, we need to allocate a new one,
+	 * so the pool remains stable.
+	 */
+	if (alloc_pool_huge_page(h, nodes_allowed, NULL)) {
+		/*
+		 * Ok, we have a free hugetlb-page to replace this
+		 * one. Dissolve the old page.
+		 */
+		if (!dissolve_free_huge_page(page))
+			ret = true;
+	}
+
+	return ret;
+}
+
 struct page *alloc_huge_page(struct vm_area_struct *vma,
 				    unsigned long addr, int avoid_reserve)
 {

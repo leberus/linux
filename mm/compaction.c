@@ -952,6 +952,17 @@ isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
 					low_pfn += compound_nr(page) - 1;
 					goto isolate_success_no_list;
 				}
+			} else {
+				/*
+				 * Free hugetlb page. Allocate a new one and
+				 * dissolve this is if succeed.
+				 */
+				if (alloc_and_dissolve_huge_page(page)) {
+					unsigned long order = buddy_order_unsafe(page);
+
+					low_pfn += (1UL << order) - 1;
+					continue;
+				}
 			}
 			goto isolate_fail;
 		}
