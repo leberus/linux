@@ -659,6 +659,7 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages,
 	VM_BUG_ON(!IS_ALIGNED(pfn, pageblock_nr_pages));
 
 	while (!IS_ALIGNED(pfn, MAX_ORDER_NR_PAGES)) {
+		pr_info("%s: pfn: %lx order: %d\n", __func__, pfn, pageblock_order);
 		(*online_page_callback)(pfn_to_page(pfn), pageblock_order);
 		pfn += pageblock_nr_pages;
 	}
@@ -865,6 +866,9 @@ int __ref online_pages(unsigned long pfn, unsigned long nr_pages,
 
 	buddy_start_pfn = pfn + nr_vmemmap_pages;
 	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
+
+	pr_info("%s: pfn: %lx nr_pages: %ld buddy_pfn: %lx buddy_nr_pages: %ld\n",
+		 __func__, pfn, nr_pages, buddy_start_pfn, buddy_nr_pages);
 
 	mem_hotplug_begin();
 
@@ -1098,6 +1102,16 @@ bool mhp_supports_memmap_on_memory(unsigned long size)
 	unsigned long pageblock_size = PFN_PHYS(pageblock_nr_pages);
 	unsigned long remaining_mem = size - PMD_SIZE;
 
+	pr_info("%s: memmap_on_memory: %d\n", __func__, memmap_on_memory);
+	pr_info("%s: size == memory_block_size_bytes: %d\n", __func__,
+		 size == memory_block_size_bytes());
+	pr_info("%s: CONFIG_MHP_MEMMAP_ON_MEMORY: %d\n", __func__,
+		 IS_ENABLED(CONFIG_MHP_MEMMAP_ON_MEMORY));
+	pr_info("%s: IS_ALIGNED(sizeof(struct page), PMD_SIZE) %d\n", __func__,
+		 PMD_SIZE % sizeof(struct page));
+	pr_info("%s: pageblock_aligned: %ld\n", __func__,
+		 IS_ALIGNED(remaining_mem, pageblock_size));
+
 	/*
 	 * Besides having CONFIG_MHP_MEMMAP_ON_MEMORY, we need a few more
 	 * assumptions to hold true:
@@ -1170,6 +1184,8 @@ int __ref add_memory_resource(int nid, struct resource *res, mhp_t mhp_flags)
 		mhp_altmap.free = PHYS_PFN(size);
 		mhp_altmap.base_pfn = PHYS_PFN(start);
 		params.altmap = &mhp_altmap;
+		pr_info("%s: mhp_altmap.base_pfn: %lx mhp_altmap.free: %ld\n",
+			 __func__, mhp_altmap.base_pfn, mhp_altmap.free);
 	}
 
 	/* call arch's memory hotadd */
@@ -1654,6 +1670,9 @@ int __ref offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 
 	buddy_start_pfn = start_pfn + nr_vmemmap_pages;
 	buddy_nr_pages = nr_pages - nr_vmemmap_pages;
+	
+	pr_info("%s: pfn: %lx nr_pages: %ld buddy_pfn: %lx buddy_nr_pages: %ld\n",
+		 __func__, start_pfn, nr_pages, buddy_start_pfn, buddy_nr_pages);
 
 	mem_hotplug_begin();
 
@@ -1938,6 +1957,7 @@ static int __ref try_remove_memory(int nid, u64 start, u64 size)
 					 start, start + size);
 				return -EINVAL;
 			}
+			pr_info("%s: nr_vmemmap_pages: %ld\n", __func__, nr_vmemmap_pages);
 
 			/*
 			 * Let remove_pmd_table->free_hugepage_table

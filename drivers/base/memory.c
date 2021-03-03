@@ -588,6 +588,8 @@ static int init_memory_block(unsigned long block_id, unsigned long state,
 	mem->nid = NUMA_NO_NODE;
 	mem->nr_vmemmap_pages = nr_vmemmap_pages;
 
+	pr_info("%s: nr_vmemmap_pages: %ld\n", __func__, nr_vmemmap_pages);
+
 	ret = register_memory(mem);
 
 	return ret;

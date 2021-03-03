@@ -72,6 +72,7 @@
 #include <linux/padata.h>
 #include <linux/khugepaged.h>
 #include <linux/buffer_head.h>
+#include <linux/memory.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -6921,9 +6922,12 @@ static void __init free_area_init_core(struct pglist_data *pgdat)
 {
 	enum zone_type j;
 	int nid = pgdat->node_id;
-
+ 
 	pgdat_init_internals(pgdat);
 	pgdat->per_cpu_nodestats = &boot_nodestats;
+
+	pr_info("%s: struct size: %ld PMD: %ld pageblock: %ld memblock: %ld\n", __func__,
+		 sizeof(struct page), PMD_SIZE, pageblock_nr_pages << PAGE_SHIFT, memory_block_size_bytes());
 
 	for (j = 0; j < MAX_NR_ZONES; j++) {
 		struct zone *zone = pgdat->node_zones + j;
