@@ -1100,6 +1100,12 @@ bool mhp_supports_memmap_on_memory(unsigned long size)
 	unsigned long nr_vmemmap_pages = size / PAGE_SIZE;
 	unsigned long vmemmap_size = nr_vmemmap_pages * sizeof(struct page);
 	unsigned long remaining_size = size - vmemmap_size;
+	unsigned long pageblock_size = pageblock_nr_pages << PAGE_SHIFT;
+
+	pr_info("%s: PMD_SIZE: %ld struct page: %ld pageblock_size: %ld memblock_byte: %ld\n",
+		 __func__, PMD_SIZE, sizeof(struct page), pageblock_size, memory_block_size_bytes());
+	pr_info("%s: nr_vmemmap_pages: %ld vmemmap_size: %ld size: %ld r_size: %ld",
+		 __func__, nr_vmemmap_pages, vmemmap_size, size, remaining_size);
 
 	/*
 	 * Besides having arch support and the feature enabled at runtime, we
@@ -1127,6 +1133,13 @@ bool mhp_supports_memmap_on_memory(unsigned long size)
 	 *	 altmap as an alternative source of memory, and we do not exactly
 	 *	 populate a single PMD.
 	 */
+
+	pr_info("%s: memmap_on_memory: %d\n", __func__, memmap_on_memory);
+	pr_info("%s: IS_ENABLED(CONFIG_MHP_MEMMAP_ON_MEMORY): %d\n", __func__, IS_ENABLED(CONFIG_MHP_MEMMAP_ON_MEMORY));
+	pr_info("%s: size == memory_block_size_bytes(): %d\n", __func__, size == memory_block_size_bytes());
+	pr_info("%s: remaining_size: %ld IS_ALIGNED(remaining_size, pageblock_size): %d\n", __func__,
+		 remaining_size, IS_ALIGNED(remaining_size, pageblock_size));
+	pr_info("%s: IS_ALIGNED(vmemmap_size, PMD_SIZE): %d\n", __func__, IS_ALIGNED(vmemmap_size, PMD_SIZE));
 	return memmap_on_memory &&
 	       IS_ENABLED(CONFIG_MHP_MEMMAP_ON_MEMORY) &&
 	       size == memory_block_size_bytes() &&
