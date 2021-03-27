@@ -173,26 +173,86 @@ static int memory_block_online(struct memory_block *mem)
 {
 	unsigned long start_pfn = section_nr_to_pfn(mem->start_section_nr);
 	unsigned long nr_pages = PAGES_PER_SECTION * sections_per_block;
+	unsigned long nr_vmemmap_pages = mem->nr_vmemmap_pages;
+	int ret;
 
 	/* We can only offline full sections (e.g., SECTION_IS_ONLINE) */
 	if (WARN_ON_ONCE(!nr_pages ||
 			 !IS_ALIGNED(start_pfn | nr_pages, PAGES_PER_SECTION)))
 		return -EINVAL;
 
-	return online_pages(start_pfn, nr_pages, mem->online_type, mem->nid);
+	mem_hotplug_begin();
+
+	/*
+	 * Although vmemmap pages have a different lifecycle than the pages
+	 * they describe (they remain until the memory is unplugged), doing
+	 * its initialization and accounting at hot-{online,offline} stage
+	 * simplifies things a lot
+	 */
+	if (nr_vmemmap_pages) {
+		ret = vmemmap_init_space(start_pfn, nr_vmemmap_pages, mem->nid,
+					 mem->online_type);
+		if (ret)
+			goto out;
+	}
+
+	ret = online_pages(start_pfn + nr_vmemmap_pages,
+			   nr_pages - nr_vmemmap_pages, mem->online_type,
+			   mem->nid);
+
+	if (ret) {
+		/*
+		 * online_pages() has failed. Clean up and return.
+		 */
+		vmemmap_substract_pages(start_pfn, nr_pages);
+		vmemmap_deinit_space(start_pfn, nr_pages);
+	}
+
+out:
+	mem_hotplug_done();
+
+	return ret;
 }
 
 static int memory_block_offline(struct memory_block *mem)
 {
 	unsigned long start_pfn = section_nr_to_pfn(mem->start_section_nr);
 	unsigned long nr_pages = PAGES_PER_SECTION * sections_per_block;
+	unsigned long nr_vmemmap_pages = mem->nr_vmemmap_pages;
+	int ret;
 
 	/* We can only offline full sections (e.g., SECTION_IS_ONLINE) */
 	if (WARN_ON_ONCE(!nr_pages ||
 			 !IS_ALIGNED(start_pfn | nr_pages, PAGES_PER_SECTION)))
 		return -EINVAL;
 
-	return offline_pages(start_pfn, nr_pages);
+	mem_hotplug_begin();
+
+	/*
+	 * offline_pages() does some tearing-down of kthreads and re-builds
+	 * zonelists in case the zone becomes empty, so we need to substract
+	 * vmemmap pages first before we call in.
+	 */
+	if (nr_vmemmap_pages)
+		vmemmap_substract_pages(start_pfn, nr_vmemmap_pages);
+
+	ret = offline_pages(start_pfn + nr_vmemmap_pages,
+			    nr_pages - nr_vmemmap_pages);
+
+	if (nr_vmemmap_pages) {
+		if (ret)
+			/*
+			 * offline_pages() failed, let us re-count the vmemmap
+			 * pages.
+			 */
+			vmemmap_account_pages(start_pfn, nr_vmemmap_pages);
+		else
+			vmemmap_deinit_space(start_pfn, nr_pages);
+	}
+
+	mem_hotplug_done();
+
+	return ret;
 }
 
 /*
@@ -586,7 +646,8 @@ int register_memory(struct memory_block *memory)
 	return ret;
 }
 
-static int init_memory_block(unsigned long block_id, unsigned long state)
+static int init_memory_block(unsigned long block_id, unsigned long state,
+			     unsigned long nr_vmemmap_pages)
 {
 	struct memory_block *mem;
 	int ret = 0;
@@ -603,6 +664,7 @@ static int init_memory_block(unsigned long block_id, unsigned long state)
 	mem->start_section_nr = block_id * sections_per_block;
 	mem->state = state;
 	mem->nid = NUMA_NO_NODE;
+	mem->nr_vmemmap_pages = nr_vmemmap_pages;
 
 	ret = register_memory(mem);
 
@@ -622,7 +684,7 @@ static int add_memory_block(unsigned long base_section_nr)
 	if (section_count == 0)
 		return 0;
 	return init_memory_block(memory_block_id(base_section_nr),
-				 MEM_ONLINE);
+				 MEM_ONLINE, 0);
 }
 
 static void unregister_memory(struct memory_block *memory)
@@ -644,7 +706,8 @@ static void unregister_memory(struct memory_block *memory)
  *
  * Called under device_hotplug_lock.
  */
-int create_memory_block_devices(unsigned long start, unsigned long size)
+int create_memory_block_devices(unsigned long start, unsigned long size,
+				unsigned long vmemmap_pages)
 {
 	const unsigned long start_block_id = pfn_to_block_id(PFN_DOWN(start));
 	unsigned long end_block_id = pfn_to_block_id(PFN_DOWN(start + size));
@@ -657,7 +720,7 @@ int create_memory_block_devices(unsigned long start, unsigned long size)
 		return -EINVAL;
 
 	for (block_id = start_block_id; block_id != end_block_id; block_id++) {
-		ret = init_memory_block(block_id, MEM_OFFLINE);
+		ret = init_memory_block(block_id, MEM_OFFLINE, vmemmap_pages);
 		if (ret)
 			break;
 	}
