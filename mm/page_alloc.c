@@ -7346,7 +7346,6 @@ static void __init calculate_node_totalpages(struct pglist_data *pgdat,
 
 	pgdat->node_spanned_pages = totalpages;
 	pgdat->node_present_pages = realtotalpages;
-	pr_debug("On node %d totalpages: %lu\n", pgdat->node_id, realtotalpages);
 }
 
 #ifndef CONFIG_SPARSEMEM
@@ -7686,14 +7685,15 @@ static void __init free_area_init_node(int nid)
 		pr_info("Initmem setup node %d [mem %#018Lx-%#018Lx]\n", nid,
 			(u64)start_pfn << PAGE_SHIFT,
 			end_pfn ? ((u64)end_pfn << PAGE_SHIFT) - 1 : 0);
+
+		calculate_node_totalpages(pgdat, start_pfn, end_pfn);
+		alloc_node_mem_map(pgdat);
+		pgdat_set_deferred_range(pgdat);
 	} else {
 		pr_info("Initmem setup node %d as memoryless\n", nid);
 	}
 
-	calculate_node_totalpages(pgdat, start_pfn, end_pfn);
-
-	alloc_node_mem_map(pgdat);
-	pgdat_set_deferred_range(pgdat);
+	pr_debug("On node %d totalpages: %lu\n", pgdat->node_id, pgdat->node_present_pages);
 
 	free_area_init_core(pgdat);
 }
