@@ -7561,6 +7561,10 @@ static void __init free_area_init_core(struct pglist_data *pgdat)
 		size = zone->spanned_pages;
 		freesize = zone->present_pages;
 
+		/* No pages? Nothing to calculate then. */
+		if (!size)
+			goto no_pages;
+
 		/*
 		 * Adjust freesize so that it accounts for how much memory
 		 * is used by this zone for memmap. This affects the watermark
@@ -7596,6 +7600,7 @@ static void __init free_area_init_core(struct pglist_data *pgdat)
 		 * when the bootmem allocator frees pages into the buddy system.
 		 * And all highmem pages will be managed by the buddy system.
 		 */
+no_pages:
 		zone_init_internals(zone, j, nid, freesize);
 
 		if (!size)
