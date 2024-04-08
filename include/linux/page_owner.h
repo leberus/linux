@@ -5,6 +5,12 @@
 #include <linux/jump_label.h>
 
 #ifdef CONFIG_PAGE_OWNER
+
+struct stack {
+        struct stack_record *stack_record;
+        struct stack *next;
+};
+
 extern struct static_key_false page_owner_inited;
 extern struct page_ext_operations page_owner_ops;
 

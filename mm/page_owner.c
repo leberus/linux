@@ -13,6 +13,9 @@
 #include <linux/memcontrol.h>
 #include <linux/sched/clock.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/page_owner.h>
+
 #include "internal.h"
 
 /*
@@ -36,10 +39,12 @@ struct page_owner {
 	pid_t free_tgid;
 };
 
-struct stack {
-	struct stack_record *stack_record;
-	struct stack *next;
-};
+static unsigned long n_stack;
+
+//struct stack {
+//	struct stack_record *stack_record;
+//	struct stack *next;
+//};
 static struct stack dummy_stack;
 static struct stack failure_stack;
 static struct stack *stack_list;
@@ -118,17 +123,23 @@ static __init void init_page_owner(void)
 	register_dummy_stack();
 	register_failure_stack();
 	register_early_stack();
-	static_branch_enable(&page_owner_inited);
 	init_early_allocated_pages();
 	/* Initialize dummy and failure stacks and link them to stack_list */
 	dummy_stack.stack_record = __stack_depot_get_stack_record(dummy_handle);
 	failure_stack.stack_record = __stack_depot_get_stack_record(failure_handle);
-	if (dummy_stack.stack_record)
+	if (dummy_stack.stack_record) {
 		refcount_set(&dummy_stack.stack_record->count, 1);
-	if (failure_stack.stack_record)
+		n_stack++;
+		pr_info("%s: dummy_stack set\n", __func__);
+	}
+	if (failure_stack.stack_record) {
 		refcount_set(&failure_stack.stack_record->count, 1);
+		n_stack++;
+		pr_info("%s: failure_stack set\n", __func__);
+	}
 	dummy_stack.next = &failure_stack;
 	stack_list = &dummy_stack;
+	static_branch_enable(&page_owner_inited);
 }
 
 struct page_ext_operations page_owner_ops = {
@@ -167,6 +178,12 @@ static void add_stack_record_to_list(struct stack_record *stack_record,
 {
 	unsigned long flags;
 	struct stack *stack;
+	static bool called = false;
+
+	if (!called) {
+		pr_info("%s called\n", __func__);
+		called = true;
+	}
 
 	/* Filter gfp_mask the same way stackdepot does, for consistency */
 	gfp_mask &= ~GFP_ZONEMASK;
@@ -180,12 +197,13 @@ static void add_stack_record_to_list(struct stack_record *stack_record,
 		return;
 	}
 	unset_current_in_page_owner();
-
-	stack->stack_record = stack_record;
-	stack->next = NULL;
+	trace_stack_record_list_alloc(stack_list, stack, stack_record);
 
 	spin_lock_irqsave(&stack_list_lock, flags);
+	n_stack++;
+	stack->stack_record = stack_record;
 	stack->next = stack_list;
+
 	/*
 	 * This pairs with smp_load_acquire() from function
 	 * stack_start(). This guarantees that stack_start()
@@ -193,6 +211,7 @@ static void add_stack_record_to_list(struct stack_record *stack_record,
 	 * traverse the list.
 	 */
 	smp_store_release(&stack_list, stack);
+	trace_stack_record_list_add(stack_list, stack, stack->next, stack->stack_record);
 	spin_unlock_irqrestore(&stack_list_lock, flags);
 }
 
@@ -858,6 +877,22 @@ static const struct file_operations proc_page_owner_operations = {
 	.llseek		= lseek_page_owner,
 };
 
+static void check_list(void)
+{
+	struct stack *p;
+	unsigned long flags;
+	unsigned long count = 0;
+
+	spin_lock_irqsave(&stack_list_lock, flags);
+	p = smp_load_acquire(&stack_list);
+	while (p) {
+		count++;
+		p = p->next;
+	}
+	pr_info("%s: count: %lu n_stack: %lu\n", __func__, count, n_stack);
+	spin_unlock_irqrestore(&stack_list_lock, flags);
+}
+
 static void *stack_start(struct seq_file *m, loff_t *ppos)
 {
 	struct stack *stack;
@@ -866,6 +901,7 @@ static void *stack_start(struct seq_file *m, loff_t *ppos)
 		return NULL;
 
 	if (!*ppos) {
+		check_list();
 		/*
 		 * This pairs with smp_store_release() from function
 		 * add_stack_record_to_list(), so we get a consistent
@@ -908,12 +944,13 @@ static int stack_print(struct seq_file *m, void *v)
 	entries = stack_record->entries;
 	nr_base_pages = refcount_read(&stack_record->count) - 1;
 
-	if (nr_base_pages < 1 || nr_base_pages < page_owner_pages_threshold)
-		return 0;
+/*	if (nr_base_pages < 1 || nr_base_pages < page_owner_pages_threshold)
+		return 0;*/
 
 	for (i = 0; i < nr_entries; i++)
 		seq_printf(m, " %pS\n", (void *)entries[i]);
-	seq_printf(m, "nr_base_pages: %d\n\n", nr_base_pages);
+	seq_printf(m, "nr_base_pages: %d stack: %px record: %px\n\n",
+		   nr_base_pages, stack, stack_record);
 
 	return 0;
 }
