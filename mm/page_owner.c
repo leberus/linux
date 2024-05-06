@@ -194,7 +194,8 @@ static inline struct page_owner *get_page_owner(struct page_ext *page_ext)
 	return page_ext_data(page_ext, &page_owner_ops);
 }
 
-static noinline depot_stack_handle_t save_stack(gfp_t flags)
+static noinline depot_stack_handle_t save_stack(gfp_t flags,
+						struct depot_lookup_ctxt *ctxt)
 {
 	unsigned long entries[PAGE_OWNER_STACK_DEPTH];
 	depot_stack_handle_t handle;
@@ -203,9 +204,12 @@ static noinline depot_stack_handle_t save_stack(gfp_t flags)
 	if (current->in_page_owner)
 		return dummy_handle;
 
+
 	set_current_in_page_owner();
 	nr_entries = stack_trace_save(entries, ARRAY_SIZE(entries), 2);
-	handle = stack_depot_save(entries, nr_entries, flags);
+	ctxt->hash = hash_stack(entries, nr_entries);
+	ctxt->bucket = &hash_table[ctxt->hash & hash_mask];
+	handle = stack_depot_save_to_list(entries, nr_entries, flags, ctxt);
 	if (!handle)
 		handle = failure_handle;
 	unset_current_in_page_owner();
@@ -342,6 +346,7 @@ void __reset_page_owner(struct page *page, unsigned short order)
 	depot_stack_handle_t alloc_handle;
 	struct page_owner *page_owner;
 	u64 free_ts_nsec = local_clock();
+	struct depot_lookup_ctxt ctxt;
 
 	page_ext = page_ext_get(page);
 	if (unlikely(!page_ext))
@@ -350,7 +355,7 @@ void __reset_page_owner(struct page *page, unsigned short order)
 	page_owner = get_page_owner(page_ext);
 	alloc_handle = page_owner->handle;
 
-	handle = save_stack(GFP_NOWAIT | __GFP_NOWARN);
+	handle = save_stack(GFP_NOWAIT | __GFP_NOWARN, &ctxt);
 	__update_page_owner_free_handle(page_ext, handle, order, current->pid,
 					current->tgid, free_ts_nsec);
 	page_ext_put(page_ext);
@@ -372,8 +377,9 @@ noinline void __set_page_owner(struct page *page, unsigned short order,
 	struct page_ext *page_ext;
 	u64 ts_nsec = local_clock();
 	depot_stack_handle_t handle;
+	struct depot_lookup_ctxt ctxt;
 
-	handle = save_stack(gfp_mask);
+	handle = save_stack(gfp_mask, &ctxt);
 
 	page_ext = page_ext_get(page);
 	if (unlikely(!page_ext))
