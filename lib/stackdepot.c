@@ -584,7 +584,8 @@ static inline struct stack_record *find_stack(struct list_head *bucket,
 depot_stack_handle_t stack_depot_save_flags(unsigned long *entries,
 					    unsigned int nr_entries,
 					    gfp_t alloc_flags,
-					    depot_flags_t depot_flags)
+					    depot_flags_t depot_flags,
+					    struct depot_lookup_ctxt *ctxt)
 {
 	struct list_head *bucket;
 	struct stack_record *found = NULL;
@@ -611,8 +612,15 @@ depot_stack_handle_t stack_depot_save_flags(unsigned long *entries,
 	if (unlikely(nr_entries == 0) || stack_depot_disabled)
 		return 0;
 
-	hash = hash_stack(entries, nr_entries);
-	bucket = &stack_table[hash & stack_hash_mask];
+	if (ctxt) {
+		/* Use the hash and bucket provided by the user */
+		hash = ctxt->hash;
+		bucket = ctxt->bucket;
+	} else {
+		/* Use the generic hash table if user did not provide its own */
+		hash = hash_stack(entries, nr_entries);
+		bucket = &stack_table[hash & stack_hash_mask];
+	}
 
 	/* Fast path: look the stack trace up without locking. */
 	found = find_stack(bucket, entries, nr_entries, hash, depot_flags);
@@ -683,9 +691,18 @@ depot_stack_handle_t stack_depot_save(unsigned long *entries,
 				      gfp_t alloc_flags)
 {
 	return stack_depot_save_flags(entries, nr_entries, alloc_flags,
-				      STACK_DEPOT_FLAG_CAN_ALLOC);
+				      STACK_DEPOT_FLAG_CAN_ALLOC, NULL);
 }
 EXPORT_SYMBOL_GPL(stack_depot_save);
+
+depot_stack_handle_t stack_depot_save_to_list(unsigned long *entries,
+					      unsigned int nr_entries,
+					      gfp_t alloc_flags,
+					      struct depot_lookup_ctxt *ctxt)
+{
+	return stack_depot_save_flags(entries, nr_entries, alloc_flags,
+				      STACK_DEPOT_FLAG_CAN_ALLOC, ctxt);
+}
 
 struct stack_record *__stack_depot_get_stack_record(depot_stack_handle_t handle)
 {

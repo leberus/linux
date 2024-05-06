@@ -76,6 +76,14 @@ struct stack_record {
 };
 #endif
 
+struct depot_lookup_ctxt {
+	 /* Bucket passed by the user to store or find a stack_record. */
+	struct list_head *bucket;
+
+	/* hash of the backtrace to match the stack_record in the bucket */
+	u32 hash;
+};
+
 typedef u32 depot_flags_t;
 
 /*
@@ -157,7 +165,8 @@ static inline int stack_depot_early_init(void)	{ return 0; }
 depot_stack_handle_t stack_depot_save_flags(unsigned long *entries,
 					    unsigned int nr_entries,
 					    gfp_t gfp_flags,
-					    depot_flags_t depot_flags);
+					    depot_flags_t depot_flags,
+					    struct depot_lookup_ctxt *ctxt);
 
 /**
  * stack_depot_save - Save a stack trace to stack depot
@@ -176,6 +185,27 @@ depot_stack_handle_t stack_depot_save_flags(unsigned long *entries,
  */
 depot_stack_handle_t stack_depot_save(unsigned long *entries,
 				      unsigned int nr_entries, gfp_t gfp_flags);
+
+/**
+ * stack_depot_save_to_list - Save a stack trace in a hashtable provided by user
+ *
+ * @entries:		Pointer to the stack trace
+ * @nr_entries:		Number of frames in the stack
+ * @alloc_flags:	Allocation GFP flags
+ * @depot_lookup_ctxt:  Struct where the user hash table and the hash of backtrace
+ *			are passed by the user
+ *
+ * Does not increment the refcount on the saved stack trace; see
+ * stack_depot_save_flags() for more details.
+ *
+ * Context: Contexts where allocations via alloc_pages() are allowed;
+ *          see stack_depot_save_flags() for more details.
+ *
+ * Return: Handle of the stack trace stored in depot, 0 on failure
+ */
+depot_stack_handle_t stack_depot_save_to_list(unsigned long *entries,
+				      unsigned int nr_entries, gfp_t gfp_flags,
+				      struct depot_lookup_ctxt *ctxt);
 
 /**
  * __stack_depot_get_stack_record - Get a pointer to a stack_record struct
