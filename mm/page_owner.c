@@ -12,6 +12,7 @@
 #include <linux/seq_file.h>
 #include <linux/memcontrol.h>
 #include <linux/sched/clock.h>
+#include <linux/jhash.h>
 
 #include "internal.h"
 
@@ -35,6 +36,22 @@ struct page_owner {
 	pid_t free_pid;
 	pid_t free_tgid;
 };
+
+/*
+ * Since page_owner is called for every allocation and free operation, in an
+ * ideal world looking up something in the table should be as fast as indexing
+ * an array, so the performance does not degrade so much.
+ * Make it at least to contain 8k at the risk of wasting some memory.
+ */
+#define BUCKET_NUMBER_ORDER_MIN 13
+/* Use this if kasan is enabled */
+#define BUCKET_NUMBER_ORDER_MAX 20
+
+#define HASH_SEED 0x9747b28c
+
+static struct list_head *hash_table;
+static unsigned int max_nr_buckets;
+static unsigned int hash_mask;
 
 struct stack {
 	struct stack_record *stack_record;
@@ -110,9 +127,43 @@ static noinline void register_early_stack(void)
 	early_handle = create_dummy_stack();
 }
 
+static inline u32 hash_stack(unsigned long *entries, unsigned int size)
+{
+	return jhash2((u32 *)entries,
+		      array_size(size,  sizeof(*entries)) / sizeof(u32),
+		      HASH_SEED);
+}
+
+static bool alloc_hash_table(void)
+{
+	unsigned int i;
+
+	if (kasan_enabled()) {
+		max_nr_buckets = 1UL << BUCKET_NUMBER_ORDER_MAX;
+	} else {
+		max_nr_buckets = 1UL << BUCKET_NUMBER_ORDER_MIN;
+	}
+
+	hash_table = kvcalloc(max_nr_buckets, sizeof(struct list_head),
+			      GFP_KERNEL);
+	if (!hash_table) {
+		pr_err("page_owner: hash table allocation failed.\n");
+		return false;
+	}
+
+	hash_mask = max_nr_buckets - 1;
+	for (i = 0; i < max_nr_buckets; i++)
+		INIT_LIST_HEAD(&hash_table[i]);
+
+	return true;
+}
+
 static __init void init_page_owner(void)
 {
 	if (!page_owner_enabled)
+		return;
+
+	if (!alloc_hash_table())
 		return;
 
 	register_dummy_stack();
