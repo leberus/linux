@@ -680,8 +680,11 @@ exit:
 		/* Stack depot didn't use this memory, free it. */
 		free_pages((unsigned long)prealloc, DEPOT_POOL_ORDER);
 	}
-	if (found)
+	if (found) {
 		handle = found->handle.handle;
+		if (ctxt)
+			ctxt->stack = found;
+	}
 	return handle;
 }
 EXPORT_SYMBOL_GPL(stack_depot_save_flags);

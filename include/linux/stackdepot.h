@@ -82,6 +82,9 @@ struct depot_lookup_ctxt {
 
 	/* hash of the backtrace to match the stack_record in the bucket */
 	u32 hash;
+
+	/* Pointer to store a stack_record we found */
+	struct stack_record *stack;
 };
 
 typedef u32 depot_flags_t;
