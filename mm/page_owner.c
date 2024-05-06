@@ -204,8 +204,10 @@ static noinline depot_stack_handle_t save_stack(gfp_t flags,
 	depot_stack_handle_t handle;
 	unsigned int nr_entries;
 
-	if (current->in_page_owner)
+	if (current->in_page_owner) {
+		ctxt->stack = dummy_stack;
 		return dummy_handle;
+	}
 
 
 	set_current_in_page_owner();
@@ -213,18 +215,18 @@ static noinline depot_stack_handle_t save_stack(gfp_t flags,
 	ctxt->hash = hash_stack(entries, nr_entries);
 	ctxt->bucket = &hash_table[ctxt->hash & hash_mask];
 	handle = stack_depot_save_to_list(entries, nr_entries, flags, ctxt);
-	if (!handle)
+	if (!handle) {
+		ctxt->stack = failure_stack;
 		handle = failure_handle;
+	}
 	unset_current_in_page_owner();
 
 	return handle;
 }
 
-static void inc_stack_record_count(depot_stack_handle_t handle,
+static void inc_stack_record_count(struct stack_record *stack_record,
 				   int nr_base_pages)
 {
-	struct stack_record *stack_record = __stack_depot_get_stack_record(handle);
-
 	if (!stack_record)
 		return;
 
@@ -355,7 +357,7 @@ noinline void __set_page_owner(struct page *page, unsigned short order,
 				   current->pid, current->tgid, ts_nsec,
 				   current->comm);
 	page_ext_put(page_ext);
-	inc_stack_record_count(handle, 1 << order);
+	inc_stack_record_count(ctxt.stack, 1 << order);
 }
 
 void __set_page_owner_migrate_reason(struct page *page, int reason)
