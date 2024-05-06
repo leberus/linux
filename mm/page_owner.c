@@ -53,21 +53,15 @@ static struct list_head *hash_table;
 static unsigned int max_nr_buckets;
 static unsigned int hash_mask;
 
-struct stack {
-	struct stack_record *stack_record;
-	struct stack *next;
-};
-static struct stack dummy_stack;
-static struct stack failure_stack;
-static struct stack *stack_list;
-static DEFINE_SPINLOCK(stack_list_lock);
-
 static bool page_owner_enabled __initdata;
 DEFINE_STATIC_KEY_FALSE(page_owner_inited);
 
 static depot_stack_handle_t dummy_handle;
 static depot_stack_handle_t failure_handle;
 static depot_stack_handle_t early_handle;
+
+static struct stack_record *dummy_stack;
+static struct stack_record *failure_stack;
 
 static void init_early_allocated_pages(void);
 
@@ -103,35 +97,53 @@ static __init bool need_page_owner(void)
 	return page_owner_enabled;
 }
 
-static __always_inline depot_stack_handle_t create_dummy_stack(void)
-{
-	unsigned long entries[4];
-	unsigned int nr_entries;
-
-	nr_entries = stack_trace_save(entries, ARRAY_SIZE(entries), 0);
-	return stack_depot_save(entries, nr_entries, GFP_KERNEL);
-}
-
-static noinline void register_dummy_stack(void)
-{
-	dummy_handle = create_dummy_stack();
-}
-
-static noinline void register_failure_stack(void)
-{
-	failure_handle = create_dummy_stack();
-}
-
-static noinline void register_early_stack(void)
-{
-	early_handle = create_dummy_stack();
-}
-
 static inline u32 hash_stack(unsigned long *entries, unsigned int size)
 {
 	return jhash2((u32 *)entries,
 		      array_size(size,  sizeof(*entries)) / sizeof(u32),
 		      HASH_SEED);
+}
+
+static __always_inline depot_stack_handle_t create_dummy_stack(void)
+{
+	unsigned long entries[4];
+	unsigned int nr_entries;
+	struct depot_lookup_ctxt ctxt;
+
+	nr_entries = stack_trace_save(entries, ARRAY_SIZE(entries), 0);
+	ctxt.hash = hash_stack(entries, nr_entries);
+	ctxt.bucket = &hash_table[ctxt.hash & hash_mask];
+
+	return stack_depot_save_to_list(entries, nr_entries, GFP_KERNEL, &ctxt);
+}
+
+static noinline void register_dummy_stack(void)
+{
+	struct stack_record *stack;
+
+	dummy_handle = create_dummy_stack();
+	stack = __stack_depot_get_stack_record(dummy_handle);
+	dummy_stack = stack;
+	refcount_set(&stack->count, 1);
+}
+
+static noinline void register_failure_stack(void)
+{
+	struct stack_record *stack;
+
+	failure_handle = create_dummy_stack();
+	stack = __stack_depot_get_stack_record(failure_handle);
+	failure_stack = stack;
+	refcount_set(&stack->count, 1);
+}
+
+static noinline void register_early_stack(void)
+{
+	struct stack_record *stack;
+
+	early_handle = create_dummy_stack();
+	stack = __stack_depot_get_stack_record(early_handle);
+	refcount_set(&stack->count, 1);
 }
 
 static bool alloc_hash_table(void)
@@ -170,15 +182,6 @@ static __init void init_page_owner(void)
 	register_failure_stack();
 	register_early_stack();
 	init_early_allocated_pages();
-	/* Initialize dummy and failure stacks and link them to stack_list */
-	dummy_stack.stack_record = __stack_depot_get_stack_record(dummy_handle);
-	failure_stack.stack_record = __stack_depot_get_stack_record(failure_handle);
-	if (dummy_stack.stack_record)
-		refcount_set(&dummy_stack.stack_record->count, 1);
-	if (failure_stack.stack_record)
-		refcount_set(&failure_stack.stack_record->count, 1);
-	dummy_stack.next = &failure_stack;
-	stack_list = &dummy_stack;
 	static_branch_enable(&page_owner_inited);
 }
 
@@ -217,41 +220,7 @@ static noinline depot_stack_handle_t save_stack(gfp_t flags,
 	return handle;
 }
 
-static void add_stack_record_to_list(struct stack_record *stack_record,
-				     gfp_t gfp_mask)
-{
-	unsigned long flags;
-	struct stack *stack;
-
-	/* Filter gfp_mask the same way stackdepot does, for consistency */
-	gfp_mask &= ~GFP_ZONEMASK;
-	gfp_mask &= (GFP_ATOMIC | GFP_KERNEL);
-	gfp_mask |= __GFP_NOWARN;
-
-	set_current_in_page_owner();
-	stack = kmalloc(sizeof(*stack), gfp_mask);
-	if (!stack) {
-		unset_current_in_page_owner();
-		return;
-	}
-	unset_current_in_page_owner();
-
-	stack->stack_record = stack_record;
-	stack->next = NULL;
-
-	spin_lock_irqsave(&stack_list_lock, flags);
-	stack->next = stack_list;
-	/*
-	 * This pairs with smp_load_acquire() from function
-	 * stack_start(). This guarantees that stack_start()
-	 * will see an updated stack_list before starting to
-	 * traverse the list.
-	 */
-	smp_store_release(&stack_list, stack);
-	spin_unlock_irqrestore(&stack_list_lock, flags);
-}
-
-static void inc_stack_record_count(depot_stack_handle_t handle, gfp_t gfp_mask,
+static void inc_stack_record_count(depot_stack_handle_t handle,
 				   int nr_base_pages)
 {
 	struct stack_record *stack_record = __stack_depot_get_stack_record(handle);
@@ -269,9 +238,7 @@ static void inc_stack_record_count(depot_stack_handle_t handle, gfp_t gfp_mask,
 	if (refcount_read(&stack_record->count) == REFCOUNT_SATURATED) {
 		int old = REFCOUNT_SATURATED;
 
-		if (atomic_try_cmpxchg_relaxed(&stack_record->count.refs, &old, 1))
-			/* Add the new stack_record to our list */
-			add_stack_record_to_list(stack_record, gfp_mask);
+		(void)atomic_try_cmpxchg_relaxed(&stack_record->count.refs, &old, 1);
 	}
 	refcount_add(nr_base_pages, &stack_record->count);
 }
@@ -388,7 +355,7 @@ noinline void __set_page_owner(struct page *page, unsigned short order,
 				   current->pid, current->tgid, ts_nsec,
 				   current->comm);
 	page_ext_put(page_ext);
-	inc_stack_record_count(handle, gfp_mask, 1 << order);
+	inc_stack_record_count(handle, 1 << order);
 }
 
 void __set_page_owner_migrate_reason(struct page *page, int reason)
@@ -915,35 +882,78 @@ static const struct file_operations proc_page_owner_operations = {
 	.llseek		= lseek_page_owner,
 };
 
+static struct stack_record *
+hashtable_get_next_stack(unsigned long *cur_bucket_nr,
+			 struct list_head **curr_bucket,
+			 struct stack_record **last_found)
+{
+	struct stack_record *found = NULL;
+	struct list_head *bucket = *curr_bucket;
+	unsigned long nr_bucket = *cur_bucket_nr;
+
+	if (!bucket) {
+		/*
+		 * Find first a non-empty bucket. On the next call we will keep
+		 * walking the bucket.
+		 */
+new_bucket:
+		bucket = &hash_table[nr_bucket];
+		list_for_each_entry(found, bucket, hash_list)
+			goto out;
+	} else {
+		 /* Check whether we have more stacks in this bucket */
+		found = *last_found;
+		list_for_each_entry_continue(found, bucket, hash_list)
+			goto out;
+	}
+
+	/* No more stacks in this bucket, check the next one */
+	if (++nr_bucket < max_nr_buckets)
+		goto new_bucket;
+
+	/* We are done walking all buckets */
+	found = NULL;
+out:
+	*cur_bucket_nr = nr_bucket;
+	*curr_bucket = bucket;
+	*last_found = found;
+
+	return found;
+}
+
+struct stack_iterator {
+	unsigned long nr_bucket;
+	struct list_head *bucket;
+	struct stack_record *last_stack;
+};
+
 static void *stack_start(struct seq_file *m, loff_t *ppos)
 {
-	struct stack *stack;
+	struct stack_record *stack;
+	struct stack_iterator *iter = m->private;
 
 	if (*ppos == -1UL)
 		return NULL;
 
-	if (!*ppos) {
-		/*
-		 * This pairs with smp_store_release() from function
-		 * add_stack_record_to_list(), so we get a consistent
-		 * value of stack_list.
-		 */
-		stack = smp_load_acquire(&stack_list);
-		m->private = stack;
-	} else {
-		stack = m->private;
-	}
+	if (!*ppos)
+		stack = hashtable_get_next_stack(&iter->nr_bucket,
+						 &iter->bucket,
+						 &iter->last_stack);
+	else
+		stack = iter->last_stack;
 
 	return stack;
 }
 
 static void *stack_next(struct seq_file *m, void *v, loff_t *ppos)
 {
-	struct stack *stack = v;
+	struct stack_iterator *iter = m->private;
+	struct stack_record *stack;
 
-	stack = stack->next;
+	stack = hashtable_get_next_stack(&iter->nr_bucket,
+					   &iter->bucket,
+					   &iter->last_stack);
 	*ppos = stack ? *ppos + 1 : -1UL;
-	m->private = stack;
 
 	return stack;
 }
@@ -953,12 +963,12 @@ static unsigned long page_owner_pages_threshold;
 static int stack_print(struct seq_file *m, void *v)
 {
 	int i, nr_base_pages;
-	struct stack *stack = v;
 	unsigned long *entries;
 	unsigned long nr_entries;
-	struct stack_record *stack_record = stack->stack_record;
+	struct stack_iterator *iter = m->private;
+	struct stack_record *stack_record = iter->last_stack;
 
-	if (!stack->stack_record)
+	if (!stack_record)
 		return 0;
 
 	nr_entries = stack_record->size;
@@ -988,7 +998,8 @@ static const struct seq_operations page_owner_stack_op = {
 
 static int page_owner_stack_open(struct inode *inode, struct file *file)
 {
-	return seq_open_private(file, &page_owner_stack_op, 0);
+	return seq_open_private(file, &page_owner_stack_op,
+				sizeof(struct stack_iterator));
 }
 
 static const struct file_operations page_owner_stack_operations = {
