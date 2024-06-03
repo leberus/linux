@@ -11,9 +11,29 @@ static inline bool is_vm_hugetlb_page(struct vm_area_struct *vma)
 	return !!(vma->vm_flags & VM_HUGETLB);
 }
 
+static inline bool pmd_vma_hugetlb(pmd_t pmd, struct vm_area_struct *vma)
+{
+	return !!(pmd_leaf(pmd) && vma && is_vm_hugetlb_page(vma));
+}
+
+static inline bool pud_vma_hugetlb(pud_t pud, struct vm_area_struct *vma)
+{
+	return !!(pud_leaf(pud) && vma && is_vm_hugetlb_page(vma));
+}
+
 #else
 
 static inline bool is_vm_hugetlb_page(struct vm_area_struct *vma)
+{
+	return false;
+}
+
+static inline bool pmd_vma_hugetlb(pmd_t pmd, struct vm_area_struct *vma)
+{
+	return false;
+}
+
+static inline bool pud_vma_hugetlb(pud_t pud, struct vm_area_struct *vma)
 {
 	return false;
 }

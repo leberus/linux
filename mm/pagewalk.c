@@ -113,6 +113,7 @@ again:
 		 * pages when we _need_ to
 		 */
 		if ((!walk->vma && (pmd_leaf(*pmd) || !pmd_present(*pmd))) ||
+		    (pmd_vma_hugetlb(*pmd, walk->vma)) ||
 		    walk->action == ACTION_CONTINUE ||
 		    !(ops->pte_entry))
 			continue;
@@ -164,6 +165,7 @@ static int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
 			goto again;
 
 		if ((!walk->vma && (pud_leaf(*pud) || !pud_present(*pud))) ||
+		    (pud_vma_hugetlb(*pud, walk->vma)) ||
 		    walk->action == ACTION_CONTINUE ||
 		    !(ops->pmd_entry || ops->pte_entry))
 			continue;
