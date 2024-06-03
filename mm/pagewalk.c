@@ -164,6 +164,7 @@ static int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
 			goto again;
 
 		if ((!walk->vma && (pud_leaf(*pud) || !pud_present(*pud))) ||
+		    (pud_vma_hugetlb(*pud, walk->vma)) ||
 		    walk->action == ACTION_CONTINUE ||
 		    !(ops->pmd_entry || ops->pte_entry))
 			continue;
