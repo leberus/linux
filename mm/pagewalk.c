@@ -113,6 +113,7 @@ again:
 		 * pages when we _need_ to
 		 */
 		if ((!walk->vma && (pmd_leaf(*pmd) || !pmd_present(*pmd))) ||
+		    (pmd_vma_hugetlb(*pmd, walk->vma)) ||
 		    walk->action == ACTION_CONTINUE ||
 		    !(ops->pte_entry))
 			continue;
