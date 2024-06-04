@@ -1670,7 +1670,21 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	return err;
 }
 
+static int pagemap_pud_range(pud_t *pudp, unsigned long addr, unsigned long end,
+			     struct mm_walk *walk)
+{
+	int err = 0;
+	struct vm_area_struct *vma = walk->vma;
+
+	if (pud_vma_hugetlb(*pudp, vma))
+		err = pagemap_hugetlb_range((pte_t *)pudp,
+					    huge_page_mask(hstate_vma(vma)),
+					    addr, end, walk);
+	return err;
+}
+
 static const struct mm_walk_ops pagemap_ops = {
+	.pud_entry	= pagemap_pud_range,
 	.pmd_entry	= pagemap_pmd_range,
 	.pte_hole	= pagemap_pte_hole,
 	.hugetlb_entry	= pagemap_hugetlb_range,
