@@ -2829,8 +2829,22 @@ static int gather_pud_stats(pud_t *pud, unsigned long addr,
 	return ret;
 }
 
+static int gather_p4d_stats(p4d_t *p4d, unsigned long addr,
+		unsigned long end, struct mm_walk *walk)
+{
+	int ret = 0;
+	struct vm_area_struct *vma = walk->vma;
+
+	if (p4d_vma_hugetlb(*p4d, vma))
+		ret = gather_hugetlb_stats((pte_t *)p4d,
+					   huge_page_mask(hstate_vma(vma)),
+					   addr, end, walk);
+	return ret;
+}
+
 static const struct mm_walk_ops show_numa_ops = {
 	.hugetlb_entry = gather_hugetlb_stats,
+	.p4d_entry = gather_p4d_stats,
 	.pud_entry = gather_pud_stats,
 	.pmd_entry = gather_pte_stats,
 	.walk_lock = PGWALK_RDLOCK,
