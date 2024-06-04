@@ -2398,6 +2398,19 @@ flush_and_return:
 	return ret;
 }
 
+static int pagemap_scan_pud_entry(pud_t *pud, unsigned long start,
+				  unsigned long end, struct mm_walk *walk)
+{
+	int ret = 0;
+	struct vm_area_struct *vma = walk->vma;
+
+	if (pud_vma_hugetlb(*pud, vma))
+		ret = pagemap_scan_hugetlb_entry((pte_t *)pud,
+						  huge_page_mask(hstate_vma(vma)),
+						  start, end, walk);
+	return ret;
+}
+
 static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
 				 int depth, struct mm_walk *walk)
 {
@@ -2424,6 +2437,7 @@ static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
 
 static const struct mm_walk_ops pagemap_scan_ops = {
 	.test_walk = pagemap_scan_test_walk,
+	.pud_entry = pagemap_scan_pud_entry,
 	.pmd_entry = pagemap_scan_pmd_entry,
 	.pte_hole = pagemap_scan_pte_hole,
 	.hugetlb_entry = pagemap_scan_hugetlb_entry,
