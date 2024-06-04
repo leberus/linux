@@ -2231,6 +2231,67 @@ out_unlock:
 #endif
 }
 
+#ifdef CONFIG_HUGETLB_PAGE
+static int pagemap_scan_hugetlb_entry(pte_t *ptep, unsigned long hmask,
+                                      unsigned long start, unsigned long end,
+                                      struct mm_walk *walk)
+{
+	struct pagemap_scan_private *p = walk->private;
+	struct vm_area_struct *vma = walk->vma;
+	unsigned long categories;
+	spinlock_t *ptl;
+	int ret = 0;
+	pte_t pte;
+
+	if (~p->arg.flags & PM_SCAN_WP_MATCHING) {
+		/* Go the short route when not write-protecting pages. */
+
+		pte = huge_ptep_get(walk->mm, start, ptep);
+		categories = p->cur_vma_category | pagemap_hugetlb_category(pte);
+
+		if (!pagemap_scan_is_interesting_page(categories, p))
+			return 0;
+
+		return pagemap_scan_output(categories, p, start, &end);
+	}
+
+	i_mmap_lock_write(vma->vm_file->f_mapping);
+	ptl = huge_pte_lock(hstate_vma(vma), vma->vm_mm, ptep);
+
+	pte = huge_ptep_get(walk->mm, start, ptep);
+	categories = p->cur_vma_category | pagemap_hugetlb_category(pte);
+
+	if (!pagemap_scan_is_interesting_page(categories, p))
+		goto out_unlock;
+
+	ret = pagemap_scan_output(categories, p, start, &end);
+	if (start == end)
+		goto out_unlock;
+
+	if (~categories & PAGE_IS_WRITTEN)
+		goto out_unlock;
+
+	if (end != start + HPAGE_SIZE) {
+		/* Partial HugeTLB page WP isn't possible. */
+		pagemap_scan_backout_range(p, start, end);
+		p->arg.walk_end = start;
+		ret = 0;
+		goto out_unlock;
+	}
+
+	make_uffd_wp_huge_pte(vma, start, ptep, pte);
+	flush_hugetlb_tlb_range(vma, start, end);
+
+out_unlock:
+	spin_unlock(ptl);
+	i_mmap_unlock_write(vma->vm_file->f_mapping);
+
+	return ret;
+}
+#else
+#define pagemap_scan_hugetlb_entry NULL
+#endif
+
 static int pagemap_scan_pmd_entry(pmd_t *pmd, unsigned long start,
 				  unsigned long end, struct mm_walk *walk)
 {
@@ -2240,6 +2301,11 @@ static int pagemap_scan_pmd_entry(pmd_t *pmd, unsigned long start,
 	pte_t *pte, *start_pte;
 	spinlock_t *ptl;
 	int ret;
+
+	if (pmd_vma_hugetlb(*pmd, vma))
+		return pagemap_scan_hugetlb_entry((pte_t *)pmd,
+						  huge_page_mask(hstate_vma(vma)),
+						  start, end, walk);
 
 	arch_enter_lazy_mmu_mode();
 
@@ -2331,67 +2397,6 @@ flush_and_return:
 	cond_resched();
 	return ret;
 }
-
-#ifdef CONFIG_HUGETLB_PAGE
-static int pagemap_scan_hugetlb_entry(pte_t *ptep, unsigned long hmask,
-				      unsigned long start, unsigned long end,
-				      struct mm_walk *walk)
-{
-	struct pagemap_scan_private *p = walk->private;
-	struct vm_area_struct *vma = walk->vma;
-	unsigned long categories;
-	spinlock_t *ptl;
-	int ret = 0;
-	pte_t pte;
-
-	if (~p->arg.flags & PM_SCAN_WP_MATCHING) {
-		/* Go the short route when not write-protecting pages. */
-
-		pte = huge_ptep_get(walk->mm, start, ptep);
-		categories = p->cur_vma_category | pagemap_hugetlb_category(pte);
-
-		if (!pagemap_scan_is_interesting_page(categories, p))
-			return 0;
-
-		return pagemap_scan_output(categories, p, start, &end);
-	}
-
-	i_mmap_lock_write(vma->vm_file->f_mapping);
-	ptl = huge_pte_lock(hstate_vma(vma), vma->vm_mm, ptep);
-
-	pte = huge_ptep_get(walk->mm, start, ptep);
-	categories = p->cur_vma_category | pagemap_hugetlb_category(pte);
-
-	if (!pagemap_scan_is_interesting_page(categories, p))
-		goto out_unlock;
-
-	ret = pagemap_scan_output(categories, p, start, &end);
-	if (start == end)
-		goto out_unlock;
-
-	if (~categories & PAGE_IS_WRITTEN)
-		goto out_unlock;
-
-	if (end != start + HPAGE_SIZE) {
-		/* Partial HugeTLB page WP isn't possible. */
-		pagemap_scan_backout_range(p, start, end);
-		p->arg.walk_end = start;
-		ret = 0;
-		goto out_unlock;
-	}
-
-	make_uffd_wp_huge_pte(vma, start, ptep, pte);
-	flush_hugetlb_tlb_range(vma, start, end);
-
-out_unlock:
-	spin_unlock(ptl);
-	i_mmap_unlock_write(vma->vm_file->f_mapping);
-
-	return ret;
-}
-#else
-#define pagemap_scan_hugetlb_entry NULL
-#endif
 
 static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
 				 int depth, struct mm_walk *walk)
