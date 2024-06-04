@@ -2816,8 +2816,22 @@ static int gather_pte_stats(pmd_t *pmd, unsigned long addr,
 	return 0;
 }
 
+static int gather_pud_stats(pud_t *pud, unsigned long addr,
+		unsigned long end, struct mm_walk *walk)
+{
+	int ret = 0;
+	struct vm_area_struct *vma = walk->vma;
+
+	if (pud_vma_hugetlb(*pud, vma))
+		ret = gather_hugetlb_stats((pte_t *)pud,
+					   huge_page_mask(hstate_vma(vma)),
+					   addr, end, walk);
+	return ret;
+}
+
 static const struct mm_walk_ops show_numa_ops = {
 	.hugetlb_entry = gather_hugetlb_stats,
+	.pud_entry = gather_pud_stats,
 	.pmd_entry = gather_pte_stats,
 	.walk_lock = PGWALK_RDLOCK,
 };
