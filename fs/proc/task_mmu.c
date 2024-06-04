@@ -570,6 +570,37 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 	smaps_account(mss, page, false, young, dirty, locked, migration);
 }
 
+#ifdef CONFIG_HUGETLB_PAGE
+static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
+                                 unsigned long addr, unsigned long end,
+                                 struct mm_walk *walk)
+{
+	struct mem_size_stats *mss = walk->private;
+	struct vm_area_struct *vma = walk->vma;
+	pte_t ptent = huge_ptep_get(walk->mm, addr, pte);
+	struct folio *folio = NULL;
+
+	if (pte_present(ptent)) {
+		folio = page_folio(pte_page(ptent));
+	} else if (is_swap_pte(ptent)) {
+		swp_entry_t swpent = pte_to_swp_entry(ptent);
+
+		if (is_pfn_swap_entry(swpent))
+			folio = pfn_swap_entry_folio(swpent);
+	}
+	if (folio) {
+		if (folio_likely_mapped_shared(folio) ||
+		    hugetlb_pmd_shared(pte))
+			mss->shared_hugetlb += huge_page_size(hstate_vma(vma));
+		else
+			mss->private_hugetlb += huge_page_size(hstate_vma(vma));
+	}
+	return 0;
+}
+#else
+#define smaps_hugetlb_range     NULL
+#endif
+
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
 		struct mm_walk *walk)
@@ -619,6 +650,12 @@ static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 	struct vm_area_struct *vma = walk->vma;
 	pte_t *pte;
 	spinlock_t *ptl;
+
+	if (pmd_vma_hugetlb(*pmd, vma)) {
+		smaps_hugetlb_range((pte_t *)pmd, huge_page_mask(hstate_vma(vma)),
+				     addr, end, walk);
+		return 0;
+	}
 
 	ptl = pmd_trans_huge_lock(pmd, vma);
 	if (ptl) {
@@ -722,37 +759,6 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 	}
 	seq_putc(m, '\n');
 }
-
-#ifdef CONFIG_HUGETLB_PAGE
-static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
-				 unsigned long addr, unsigned long end,
-				 struct mm_walk *walk)
-{
-	struct mem_size_stats *mss = walk->private;
-	struct vm_area_struct *vma = walk->vma;
-	pte_t ptent = huge_ptep_get(walk->mm, addr, pte);
-	struct folio *folio = NULL;
-
-	if (pte_present(ptent)) {
-		folio = page_folio(pte_page(ptent));
-	} else if (is_swap_pte(ptent)) {
-		swp_entry_t swpent = pte_to_swp_entry(ptent);
-
-		if (is_pfn_swap_entry(swpent))
-			folio = pfn_swap_entry_folio(swpent);
-	}
-	if (folio) {
-		if (folio_likely_mapped_shared(folio) ||
-		    hugetlb_pmd_shared(pte))
-			mss->shared_hugetlb += huge_page_size(hstate_vma(vma));
-		else
-			mss->private_hugetlb += huge_page_size(hstate_vma(vma));
-	}
-	return 0;
-}
-#else
-#define smaps_hugetlb_range	NULL
-#endif /* HUGETLB_PAGE */
 
 static const struct mm_walk_ops smaps_walk_ops = {
 	.pmd_entry		= smaps_pte_range,
