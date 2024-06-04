@@ -644,6 +644,19 @@ static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
 }
 #endif
 
+static int smaps_p4d_range(p4d_t *p4d, unsigned long addr, unsigned long end,
+                           struct mm_walk *walk)
+{
+	struct vm_area_struct *vma = walk->vma;
+	int ret = 0;
+
+	if (p4d_vma_hugetlb(*p4d, vma))
+		ret = smaps_hugetlb_range((pte_t *)p4d,
+					  huge_page_mask(hstate_vma(vma)),
+					  addr, end, walk);
+	return ret;
+}
+
 static int smaps_pud_range(pud_t *pud, unsigned long addr, unsigned long end,
                            struct mm_walk *walk)
 {
@@ -775,6 +788,7 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 }
 
 static const struct mm_walk_ops smaps_walk_ops = {
+	.p4d_entry		= smaps_p4d_range,
 	.pud_entry		= smaps_pud_range,
 	.pmd_entry		= smaps_pte_range,
 	.hugetlb_entry		= smaps_hugetlb_range,
@@ -782,6 +796,7 @@ static const struct mm_walk_ops smaps_walk_ops = {
 };
 
 static const struct mm_walk_ops smaps_shmem_walk_ops = {
+	.p4d_entry		= smaps_p4d_range,
 	.pud_entry		= smaps_pud_range,
 	.pmd_entry		= smaps_pte_range,
 	.hugetlb_entry		= smaps_hugetlb_range,
