@@ -632,6 +632,42 @@ static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
 }
 #endif
 
+static int smaps_pud_range(pud_t *pudp, unsigned long addr, unsigned long end,
+                           struct mm_walk *walk)
+{
+	spinlock_t *ptl;
+	struct folio *folio;
+	struct vm_area_struct *vma = walk->vma;
+	struct mem_size_stats *mss = walk->private;
+
+	/*
+	 * Although we can have other types of PUD-mapped mappins, smaps only
+	 * cares about hugetlb, so just have the code handling that here.
+	 * We can always add THP handling code once we have the support for that.
+	 */
+
+	ptl = pud_huge_lock(pudp, vma);
+	if (!ptl)
+		/* Either it is not a PUD-leaf or the lock could not be taken */
+		return 0;
+
+	if (pud_present(*pudp)) {
+		folio = page_folio(pud_page(*pudp));
+	} else if (is_swap_pud(*pudp)) {
+		/* PUD-hugetlbs can have swap entries */
+		swp_entry_t swpent = pud_to_swp_entry(*pudp);
+
+		if (is_pfn_swap_entry(swpent))
+			folio = pfn_swap_entry_folio(swpent);
+	}
+
+	if (folio)
+		mss_hugetlb_update(mss, folio, vma, (pte_t *)pudp);
+
+	spin_unlock(ptl);
+	return 0;
+}
+
 static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 			   struct mm_walk *walk)
 {
@@ -774,12 +810,14 @@ static int smaps_hugetlb_range(pte_t *pte, unsigned long hmask,
 #endif /* HUGETLB_PAGE */
 
 static const struct mm_walk_ops smaps_walk_ops = {
+	.pud_entry		= smaps_pud_range,
 	.pmd_entry		= smaps_pte_range,
 	.hugetlb_entry		= smaps_hugetlb_range,
 	.walk_lock		= PGWALK_RDLOCK,
 };
 
 static const struct mm_walk_ops smaps_shmem_walk_ops = {
+	.pud_entry		= smaps_pud_range,
 	.pmd_entry		= smaps_pte_range,
 	.hugetlb_entry		= smaps_hugetlb_range,
 	.pte_hole		= smaps_pte_hole,
