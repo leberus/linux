@@ -481,6 +481,10 @@ static inline void __flush_tlb_range(struct vm_area_struct *vma,
 static inline void flush_tlb_range(struct vm_area_struct *vma,
 				   unsigned long start, unsigned long end)
 {
+	if (is_vm_hugetlb_page(vma)) {
+		flush_hugetlb_tlb_range(vma, start, end);
+		return ;
+	}
 	/*
 	 * We cannot use leaf-only invalidation here, since we may be invalidating
 	 * table entries as part of collapsing hugepages or moving page tables.
