@@ -2021,6 +2021,23 @@ static void make_uffd_wp_pmd(struct vm_area_struct *vma,
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE || CONFIG_HUGETLB_PAGE */
 
 #ifdef CONFIG_HUGETLB_PAGE
+static void make_uffd_wp_pud(struct vm_area_struct *vma,
+			     unsigned long addr, pud_t *pudp)
+{
+	pud_t old, pud = *pudp;
+
+	if (pud_present(pud)) {
+		old = pudp_invalidate_ad(vma, addr, pudp);
+		pud = pud_mkuffd_wp(old);
+		set_pud_at(vma->vm_mm, addr, pudp, pud);
+	} else if (is_migration_entry(pud_to_swp_entry(pud))) {
+		pud = pud_swp_mkuffd_wp(pud);
+		set_pud_at(vma->vm_mm, addr, pudp, pud);
+	}
+}
+#endif /* CONFIG_HUGETLB_PAGE */
+
+#ifdef CONFIG_HUGETLB_PAGE
 static unsigned long pagemap_hugetlb_category(pte_t pte)
 {
 	unsigned long categories = PAGE_IS_HUGE;
@@ -2379,6 +2396,54 @@ flush_and_return:
 }
 
 #ifdef CONFIG_HUGETLB_PAGE
+static int pagemap_scan_pud_entry(pud_t *pud, unsigned long start,
+				  unsigned long end, struct mm_walk *walk)
+{
+	int ret = 0;
+	spinlock_t *ptl;
+	unsigned long categories;
+	struct vm_area_struct *vma = walk->vma;
+	struct pagemap_scan_private *p = walk->private;
+
+	/* Only PUD-mapped hugetlb can reach here at this moment */
+	ptl = pud_huge_lock(pud, vma);
+	if (!ptl)
+		return 0;
+
+/*	categories = p->cur_vma_category |
+		     pagemap_pud_category(p, vma, start, *pud);*/
+
+	if (!pagemap_scan_is_interesting_page(categories, p))
+		goto out_unlock;
+
+	ret = pagemap_scan_output(categories, p, start, &end);
+	if (start == end)
+		goto out_unlock;
+
+	if (~p->arg.flags & PM_SCAN_WP_MATCHING)
+		goto out_unlock;
+	if (~categories & PAGE_IS_WRITTEN)
+		goto out_unlock;
+
+	if (end != start + PUD_SIZE) {
+		ret = 0;
+		pagemap_scan_backout_range(p, start, end);
+		p->arg.walk_end = start;
+		goto out_unlock;
+	}
+
+	make_uffd_wp_pud(vma, start, pud);
+	flush_tlb_range(vma, start, end);
+
+out_unlock:
+	spin_unlock(ptl);
+	return ret;
+}
+#else
+#define pagemap_scan_pud_entry	NULL
+#endif
+
+#ifdef CONFIG_HUGETLB_PAGE
 static int pagemap_scan_hugetlb_entry(pte_t *ptep, unsigned long hmask,
 				      unsigned long start, unsigned long end,
 				      struct mm_walk *walk)
@@ -2465,6 +2530,7 @@ static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
 
 static const struct mm_walk_ops pagemap_scan_ops = {
 	.test_walk = pagemap_scan_test_walk,
+	.pud_entry = pagemap_scan_pud_entry,
 	.pmd_entry = pagemap_scan_pmd_entry,
 	.pte_hole = pagemap_scan_pte_hole,
 	.hugetlb_entry = pagemap_scan_hugetlb_entry,
