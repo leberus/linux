@@ -1504,6 +1504,61 @@ static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
 	return make_pme(frame, flags);
 }
 
+#ifdef CONFIG_HUGETLB_PAGE
+/* This function walks within one hugetlb entry in the single call */
+static int pagemap_hugetlb_range(pte_t *ptep, unsigned long hmask,
+                                 unsigned long addr, unsigned long end,
+                                 struct mm_walk *walk)
+{
+	struct pagemapread *pm = walk->private;
+	struct vm_area_struct *vma = walk->vma;
+	u64 flags = 0, frame = 0;
+	int err = 0;
+	pte_t pte;
+
+	if (vma->vm_flags & VM_SOFTDIRTY)
+		flags |= PM_SOFT_DIRTY;
+
+	pte = huge_ptep_get(walk->mm, addr, ptep);
+	if (pte_present(pte)) {
+		struct folio *folio = page_folio(pte_page(pte));
+
+		if (!folio_test_anon(folio))
+			flags |= PM_FILE;
+
+		if (!folio_likely_mapped_shared(folio) &&
+		    !hugetlb_pmd_shared(ptep))
+			flags |= PM_MMAP_EXCLUSIVE;
+
+		if (huge_pte_uffd_wp(pte))
+			flags |= PM_UFFD_WP;
+
+		flags |= PM_PRESENT;
+		if (pm->show_pfn)
+			frame = pte_pfn(pte) +
+				((addr & ~hmask) >> PAGE_SHIFT);
+        } else if (pte_swp_uffd_wp_any(pte)) {
+		flags |= PM_UFFD_WP;
+        }
+
+        for (; addr != end; addr += PAGE_SIZE) {
+		pagemap_entry_t pme = make_pme(frame, flags);
+
+		err = add_to_pagemap(&pme, pm);
+		if (err)
+			return err;
+		if (pm->show_pfn && (flags & PM_PRESENT))
+			frame++;
+	}
+
+        cond_resched();
+
+        return err;
+}
+#else
+#define pagemap_hugetlb_range   NULL
+#endif /* HUGETLB_PAGE */
+
 static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 			     struct mm_walk *walk)
 {
@@ -1512,6 +1567,14 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	spinlock_t *ptl;
 	pte_t *pte, *orig_pte;
 	int err = 0;
+
+	if (pmd_vma_hugetlb(*pmdp, vma)) {
+		err = pagemap_hugetlb_range((pte_t *)pmdp,
+					    huge_page_mask(hstate_vma(vma)),
+					    addr, end, walk);
+		return err;
+	}
+
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 	bool migration = false;
 
@@ -1606,61 +1669,6 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 
 	return err;
 }
-
-#ifdef CONFIG_HUGETLB_PAGE
-/* This function walks within one hugetlb entry in the single call */
-static int pagemap_hugetlb_range(pte_t *ptep, unsigned long hmask,
-				 unsigned long addr, unsigned long end,
-				 struct mm_walk *walk)
-{
-	struct pagemapread *pm = walk->private;
-	struct vm_area_struct *vma = walk->vma;
-	u64 flags = 0, frame = 0;
-	int err = 0;
-	pte_t pte;
-
-	if (vma->vm_flags & VM_SOFTDIRTY)
-		flags |= PM_SOFT_DIRTY;
-
-	pte = huge_ptep_get(walk->mm, addr, ptep);
-	if (pte_present(pte)) {
-		struct folio *folio = page_folio(pte_page(pte));
-
-		if (!folio_test_anon(folio))
-			flags |= PM_FILE;
-
-		if (!folio_likely_mapped_shared(folio) &&
-		    !hugetlb_pmd_shared(ptep))
-			flags |= PM_MMAP_EXCLUSIVE;
-
-		if (huge_pte_uffd_wp(pte))
-			flags |= PM_UFFD_WP;
-
-		flags |= PM_PRESENT;
-		if (pm->show_pfn)
-			frame = pte_pfn(pte) +
-				((addr & ~hmask) >> PAGE_SHIFT);
-	} else if (pte_swp_uffd_wp_any(pte)) {
-		flags |= PM_UFFD_WP;
-	}
-
-	for (; addr != end; addr += PAGE_SIZE) {
-		pagemap_entry_t pme = make_pme(frame, flags);
-
-		err = add_to_pagemap(&pme, pm);
-		if (err)
-			return err;
-		if (pm->show_pfn && (flags & PM_PRESENT))
-			frame++;
-	}
-
-	cond_resched();
-
-	return err;
-}
-#else
-#define pagemap_hugetlb_range	NULL
-#endif /* HUGETLB_PAGE */
 
 static const struct mm_walk_ops pagemap_ops = {
 	.pmd_entry	= pagemap_pmd_range,
