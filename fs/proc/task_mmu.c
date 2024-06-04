@@ -644,6 +644,20 @@ static void smaps_pmd_entry(pmd_t *pmd, unsigned long addr,
 }
 #endif
 
+static int smaps_pud_range(pud_t *pud, unsigned long addr, unsigned long end,
+                           struct mm_walk *walk)
+{
+	struct vm_area_struct *vma = walk->vma;
+	int ret = 0;
+
+	if (pud_vma_hugetlb(*pud, vma))
+		ret = smaps_hugetlb_range((pte_t *)pud,
+					   huge_page_mask(hstate_vma(vma)),
+					   addr, end, walk);
+
+	return ret;
+}
+
 static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 			   struct mm_walk *walk)
 {
@@ -761,12 +775,14 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 }
 
 static const struct mm_walk_ops smaps_walk_ops = {
+	.pud_entry		= smaps_pud_range,
 	.pmd_entry		= smaps_pte_range,
 	.hugetlb_entry		= smaps_hugetlb_range,
 	.walk_lock		= PGWALK_RDLOCK,
 };
 
 static const struct mm_walk_ops smaps_shmem_walk_ops = {
+	.pud_entry		= smaps_pud_range,
 	.pmd_entry		= smaps_pte_range,
 	.hugetlb_entry		= smaps_hugetlb_range,
 	.pte_hole		= smaps_pte_hole,
