@@ -2411,6 +2411,19 @@ static int pagemap_scan_pud_entry(pud_t *pud, unsigned long start,
 	return ret;
 }
 
+static int pagemap_scan_p4d_entry(p4d_t *p4d, unsigned long start,
+				  unsigned long end, struct mm_walk *walk)
+{
+	int ret = 0;
+	struct vm_area_struct *vma = walk->vma;
+
+	if (p4d_vma_hugetlb(*p4d, vma))
+		ret = pagemap_scan_hugetlb_entry((pte_t *)p4d,
+						  huge_page_mask(hstate_vma(vma)),
+						  start, end, walk);
+	return ret;
+}
+
 static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
 				 int depth, struct mm_walk *walk)
 {
@@ -2437,6 +2450,7 @@ static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
 
 static const struct mm_walk_ops pagemap_scan_ops = {
 	.test_walk = pagemap_scan_test_walk,
+	.p4d_entry = pagemap_scan_p4d_entry,
 	.pud_entry = pagemap_scan_pud_entry,
 	.pmd_entry = pagemap_scan_pmd_entry,
 	.pte_hole = pagemap_scan_pte_hole,
