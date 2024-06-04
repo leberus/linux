@@ -2376,6 +2376,54 @@ flush_and_return:
 }
 
 #ifdef CONFIG_HUGETLB_PAGE
+static int pagemap_scan_pud_entry(pud_t *pud, unsigned long start,
+				  unsigned long end, struct mm_walk *walk)
+{
+	int ret = 0;
+	spinlock_t *ptl;
+	unsigned long categories;
+	struct vm_area_struct *vma = walk->vma;
+	struct pagemap_scan_private *p = walk->private;
+
+	/* Only PUD-mapped hugetlb can reach here at this moment */
+	ptl = pud_huge_lock(pud, vma);
+	if (!ptl)
+		return 0;
+
+/*	categories = p->cur_vma_category |
+		     pagemap_pud_category(p, vma, start, *pud);*/
+
+	if (!pagemap_scan_is_interesting_page(categories, p))
+		goto out_unlock;
+
+	ret = pagemap_scan_output(categories, p, start, &end);
+	if (start == end)
+		goto out_unlock;
+
+	if (~p->arg.flags & PM_SCAN_WP_MATCHING)
+		goto out_unlock;
+	if (~categories & PAGE_IS_WRITTEN)
+		goto out_unlock;
+
+	if (end != start + PUD_SIZE) {
+		ret = 0;
+		pagemap_scan_backout_range(p, start, end);
+		p->arg.walk_end = start;
+		goto out_unlock;
+	}
+
+//	make_uffd_wp_pud(vma, start, pud);
+	flush_tlb_range(vma, start, end);
+
+out_unlock:
+	spin_unlock(ptl);
+	return ret;
+}
+#else
+#define pagemap_scan_pud_entry	NULL
+#endif
+
+#ifdef CONFIG_HUGETLB_PAGE
 static int pagemap_scan_hugetlb_entry(pte_t *ptep, unsigned long hmask,
 				      unsigned long start, unsigned long end,
 				      struct mm_walk *walk)
@@ -2462,6 +2510,7 @@ static int pagemap_scan_pte_hole(unsigned long addr, unsigned long end,
 
 static const struct mm_walk_ops pagemap_scan_ops = {
 	.test_walk = pagemap_scan_test_walk,
+	.pud_entry = pagemap_scan_pud_entry,
 	.pmd_entry = pagemap_scan_pmd_entry,
 	.pte_hole = pagemap_scan_pte_hole,
 	.hugetlb_entry = pagemap_scan_hugetlb_entry,
