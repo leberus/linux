@@ -643,13 +643,26 @@ static int break_ksm_pmd_entry(pmd_t *pmd, unsigned long addr, unsigned long nex
 	return ret;
 }
 
+static int break_ksm_test_walk(unsigned long start, unsigned long end,
+			       struct mm_walk *walk)
+{
+	struct vm_area_struct *vma = walk->vma;
+
+	if (is_vm_hugetlb_page(vma))
+		return 1;
+
+	return 0;
+}
+
 static const struct mm_walk_ops break_ksm_ops = {
 	.pmd_entry = break_ksm_pmd_entry,
+	.test_walk = break_ksm_test_walk,
 	.walk_lock = PGWALK_RDLOCK,
 };
 
 static const struct mm_walk_ops break_ksm_lock_vma_ops = {
 	.pmd_entry = break_ksm_pmd_entry,
+	.test_walk = break_ksm_test_walk,
 	.walk_lock = PGWALK_WRLOCK,
 };
 
