@@ -770,6 +770,31 @@ static int check_hwpoisoned_entry(pte_t pte, unsigned long addr, short shift,
 	return 1;
 }
 
+#ifdef CONFIG_HUGETLB_PAGE
+static int check_hwpoisoned_pud_entry(pmd_t *pudp, unsigned long addr,
+				      struct hwpoison_walk *hwp,
+				      struct vm_area_struct *vma)
+{
+	pud_t pud = *pudp;
+	unsigned long pfn;
+	unsigned long hwpoison_vaddr;
+
+	if (pud_present(pud)) {
+		pfn = pud_pfn(pud);
+	} else {
+		swp_entry_t swp = pud_to_swp_entry(pud);
+		if (!is_hwpoison_entry(swp))
+			return 0;
+		pfn = swp_offset_pfn(swp);
+	}
+
+	set_to_kill(tk, addr, huge_page_shift(hstate_vma(vma)));
+	return 1;
+}
+#else
+check_hwpoisoned_pud_entry NULL
+#endif
+
 #if defined (CONFIG_TRANSPARENT_HUGEPAGE) || defined (CONFIG_HUGETLB_PAGE)
 static int check_hwpoisoned_pmd_entry(pmd_t *pmdp, unsigned long addr,
 				      struct hwpoison_walk *hwp,
@@ -858,6 +883,7 @@ static int hwpoison_hugetlb_range(pte_t *ptep, unsigned long hmask,
 #endif
 
 static const struct mm_walk_ops hwpoison_walk_ops = {
+	.pud_entry = hwpoison_pud_range,
 	.pmd_entry = hwpoison_pte_range,
 	.hugetlb_entry = hwpoison_hugetlb_range,
 	.walk_lock = PGWALK_RDLOCK,
