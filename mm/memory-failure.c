@@ -770,17 +770,29 @@ static int check_hwpoisoned_entry(pte_t pte, unsigned long addr, short shift,
 	return 1;
 }
 
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+#if defined (CONFIG_TRANSPARENT_HUGEPAGE) || defined (CONFIG_HUGETLB_PAGE)
 static int check_hwpoisoned_pmd_entry(pmd_t *pmdp, unsigned long addr,
-				      struct hwpoison_walk *hwp)
+				      struct hwpoison_walk *hwp,
+				      struct vm_area_struct *vma)
 {
 	pmd_t pmd = *pmdp;
 	unsigned long pfn;
 	unsigned long hwpoison_vaddr;
 
-	if (!pmd_present(pmd))
-		return 0;
-	pfn = pmd_pfn(pmd);
+	if (pmd_present(pmd)) {
+		pfn = pmd_pfn(pmd);
+	} else {
+		swp_entry_t swp = pmd_to_swp_entry(pmd);
+		if (!is_hwpoison_entry(swp))
+			return 0;
+		pfn = swp_offset_pfn(swp);
+	}
+
+	if (is_vm_hugetlb_vma) {
+		set_to_kill(tk, addr, huge_page_shift(hstate_vma(vma)));
+		return 1;
+	}
+
 	if (pfn <= hwp->pfn && hwp->pfn < pfn + HPAGE_PMD_NR) {
 		hwpoison_vaddr = addr + ((hwp->pfn - pfn) << PAGE_SHIFT);
 		set_to_kill(&hwp->tk, hwpoison_vaddr, PAGE_SHIFT);
@@ -790,7 +802,8 @@ static int check_hwpoisoned_pmd_entry(pmd_t *pmdp, unsigned long addr,
 }
 #else
 static int check_hwpoisoned_pmd_entry(pmd_t *pmdp, unsigned long addr,
-				      struct hwpoison_walk *hwp)
+				      struct hwpoison_walk *hwp,
+				      struct vm_area_struct *vma)
 {
 	return 0;
 }
@@ -804,9 +817,9 @@ static int hwpoison_pte_range(pmd_t *pmdp, unsigned long addr,
 	pte_t *ptep, *mapped_pte;
 	spinlock_t *ptl;
 
-	ptl = pmd_trans_huge_lock(pmdp, walk->vma);
+	ptl = pmd_huge_lock(pmdp, walk->vma);
 	if (ptl) {
-		ret = check_hwpoisoned_pmd_entry(pmdp, addr, hwp);
+		ret = check_hwpoisoned_pmd_entry(pmdp, addr, hwp, walk->vma);
 		spin_unlock(ptl);
 		goto out;
 	}
