@@ -2938,6 +2938,7 @@ static struct page *can_gather_numa_stats_pmd(pmd_t pmd,
 static int gather_pte_stats(pmd_t *pmd, unsigned long addr,
 		unsigned long end, struct mm_walk *walk)
 {
+	unsigned long size = PAGE_SIZE, cont_ptes = 1;
 	struct numa_maps *md = walk->private;
 	struct vm_area_struct *vma = walk->vma;
 	spinlock_t *ptl;
@@ -2968,14 +2969,18 @@ static int gather_pte_stats(pmd_t *pmd, unsigned long addr,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
+	if (pte_cont(*pte)) {
+		cont_ptes = CONT_PTES;
+		size = CONT_PTE_SIZE;
+	}
 	do {
 		pte_t ptent = ptep_get(pte);
 		struct page *page = can_gather_numa_stats(ptent, vma, addr);
 		if (!page)
 			continue;
-		gather_stats(page, md, pte_dirty(ptent), 1);
+		gather_stats(page, md, pte_dirty(ptent), cont_ptes);
 
-	} while (pte++, addr += PAGE_SIZE, addr != end);
+	} while (pte += cont_ptes, addr += size, addr != end);
 	pte_unmap_unlock(orig_pte, ptl);
 	cond_resched();
 	return 0;
