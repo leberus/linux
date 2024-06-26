@@ -1534,6 +1534,7 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 	spinlock_t *ptl;
 	pte_t *pte, *orig_pte;
 	int err = 0;
+	unsigned long size = PAGE_SIZE, cont_ptes = 1;
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_HUGETLB_PAGE)
 	bool migration = false;
 
@@ -1613,7 +1614,11 @@ static int pagemap_pmd_range(pmd_t *pmdp, unsigned long addr, unsigned long end,
 		walk->action = ACTION_AGAIN;
 		return err;
 	}
-	for (; addr < end; pte++, addr += PAGE_SIZE) {
+	if (pte_cont(*pte)) {
+		cont_ptes = CONT_PTES;
+		size = CONT_PTE_SIZE;
+	}
+	for (; addr < end; pte += cont_ptes, addr += size) {
 		pagemap_entry_t pme;
 
 		pme = pte_to_pagemap_entry(pm, vma, addr, ptep_get(pte));
