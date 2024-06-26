@@ -572,6 +572,7 @@ static int queue_folios_pte_range(pmd_t *pmd, unsigned long addr,
 	struct folio *folio;
 	struct queue_pages *qp = walk->private;
 	unsigned long flags = qp->flags;
+	unsigned long size = PAGE_SIZE, cont_ptes = 1;
 	pte_t *pte, *mapped_pte;
 	pte_t ptent;
 	spinlock_t *ptl;
@@ -588,7 +589,11 @@ static int queue_folios_pte_range(pmd_t *pmd, unsigned long addr,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
-	for (; addr != end; pte++, addr += PAGE_SIZE) {
+	if (pte_cont(*pte)) {
+		cont_ptes = CONT_PTES;
+		size = CONT_PTE_SIZE;
+	}
+	for (; addr != end; pte += cont_ptes, addr += size) {
 		ptent = ptep_get(pte);
 		if (pte_none(ptent))
 			continue;
