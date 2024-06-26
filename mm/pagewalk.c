@@ -24,16 +24,24 @@ static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
 				unsigned long end, struct mm_walk *walk)
 {
 	const struct mm_walk_ops *ops = walk->ops;
+	unsigned long size, cont_ptes;
 	int err = 0;
 
 	for (;;) {
-		err = ops->pte_entry(pte, addr, addr + PAGE_SIZE, walk);
+		if (pte_cont(*pte)) {
+			size = CONT_PTE_SIZE;
+			cont_ptes = CONT_PTES;
+		} else {
+			size = PAGE_SIZE;
+			cont_ptes = 1;
+		}
+		err = ops->pte_entry(pte, addr, addr + size, walk);
 		if (err)
 		       break;
 		if (addr >= end - PAGE_SIZE)
 			break;
-		addr += PAGE_SIZE;
-		pte++;
+		addr += size;
+		pte += cont_ptes;
 	}
 	return err;
 }
