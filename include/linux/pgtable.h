@@ -1952,6 +1952,10 @@ typedef unsigned int pgtbl_mod_mask;
 #define CONT_PTES 0
 #endif
 
+#ifndef CONT_PTE_SHIFT
+#define CONT_PTE_SHIFT PAGE_SHIFT
+#endif
+
 /*
  * We always define pmd_pfn for all archs as it's used in lots of generic
  * code.  Now it happens too for pud_pfn (and can happen for larger

@@ -852,8 +852,10 @@ static int hwpoison_pte_range(pmd_t *pmdp, unsigned long addr,
 {
 	struct hwpoison_walk *hwp = walk->private;
 	int ret = 0;
+	short shift = PAGE_SHIFT;
 	pte_t *ptep, *mapped_pte;
 	spinlock_t *ptl;
+	unsigned long size = PAGE_SIZE, cont_ptes = 1;
 
 	ptl = pmd_huge_lock(pmdp, walk->vma);
 	if (ptl) {
@@ -866,9 +868,14 @@ static int hwpoison_pte_range(pmd_t *pmdp, unsigned long addr,
 						addr, &ptl);
 	if (!ptep)
 		goto out;
+	if (pte_cont(ptep_get(ptep))) {
+		cont_ptes = CONT_PTES;
+		size = CONT_PTE_SIZE;
+		shift = CONT_PTE_SHIFT;
+	}
 
-	for (; addr != end; ptep++, addr += PAGE_SIZE) {
-		ret = check_hwpoisoned_entry(ptep_get(ptep), addr, PAGE_SHIFT,
+	for (; addr != end; ptep += cont_ptes, addr += size) {
+		ret = check_hwpoisoned_entry(ptep_get(ptep), addr, shift,
 					     hwp->pfn, &hwp->tk);
 		if (ret == 1)
 			break;
