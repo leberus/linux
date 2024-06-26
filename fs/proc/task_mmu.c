@@ -2350,6 +2350,7 @@ static int pagemap_scan_pmd_entry(pmd_t *pmd, unsigned long start,
 {
 	struct pagemap_scan_private *p = walk->private;
 	struct vm_area_struct *vma = walk->vma;
+	unsigned long size = PAGE_SIZE, cont_ptes = 1;
 	unsigned long addr, flush_end = 0;
 	pte_t *pte, *start_pte;
 	spinlock_t *ptl;
@@ -2370,10 +2371,14 @@ static int pagemap_scan_pmd_entry(pmd_t *pmd, unsigned long start,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
+	if (pte_cont(*pte)) {
+		cont_ptes = CONT_PTES;
+		size = CONT_PTE_SIZE;
+	}
 
 	if ((p->arg.flags & PM_SCAN_WP_MATCHING) && !p->vec_out) {
 		/* Fast path for performing exclusive WP */
-		for (addr = start; addr != end; pte++, addr += PAGE_SIZE) {
+		for (addr = start; addr != end; pte += cont_ptes, addr += size) {
 			pte_t ptent = ptep_get(pte);
 
 			if ((pte_present(ptent) && pte_uffd_wp(ptent)) ||
@@ -2382,7 +2387,7 @@ static int pagemap_scan_pmd_entry(pmd_t *pmd, unsigned long start,
 			make_uffd_wp_pte(vma, addr, pte, ptent);
 			if (!flush_end)
 				start = addr;
-			flush_end = addr + PAGE_SIZE;
+			flush_end = addr + size;
 		}
 		goto flush_and_return;
 	}
@@ -2390,8 +2395,8 @@ static int pagemap_scan_pmd_entry(pmd_t *pmd, unsigned long start,
 	if (!p->arg.category_anyof_mask && !p->arg.category_inverted &&
 	    p->arg.category_mask == PAGE_IS_WRITTEN &&
 	    p->arg.return_mask == PAGE_IS_WRITTEN) {
-		for (addr = start; addr < end; pte++, addr += PAGE_SIZE) {
-			unsigned long next = addr + PAGE_SIZE;
+		for (addr = start; addr < end; pte += cont_ptes, addr += size) {
+			unsigned long next = addr + size;
 			pte_t ptent = ptep_get(pte);
 
 			if ((pte_present(ptent) && pte_uffd_wp(ptent)) ||
@@ -2411,11 +2416,11 @@ static int pagemap_scan_pmd_entry(pmd_t *pmd, unsigned long start,
 		goto flush_and_return;
 	}
 
-	for (addr = start; addr != end; pte++, addr += PAGE_SIZE) {
+	for (addr = start; addr != end; pte += cont_ptes, addr += size) {
 		pte_t ptent = ptep_get(pte);
 		unsigned long categories = p->cur_vma_category |
 					   pagemap_page_category(p, vma, addr, ptent);
-		unsigned long next = addr + PAGE_SIZE;
+		unsigned long next = addr + size;
 
 		if (!pagemap_scan_is_interesting_page(categories, p))
 			continue;
