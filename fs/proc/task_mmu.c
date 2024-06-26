@@ -579,7 +579,10 @@ static void smaps_pte_entry(pte_t *pte, unsigned long addr,
 	if (!page)
 		return;
 
-	smaps_account(mss, page, false, young, dirty, locked, migration);
+	if (is_vm_hugetlb_page(vma))
+		mss_hugetlb_update(mss, page_folio(page), vma, pte);
+	else
+		smaps_account(mss, page, false, young, dirty, locked, migration);
 }
 
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_HUGETLB_PAGE)
@@ -671,6 +674,7 @@ static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 	struct vm_area_struct *vma = walk->vma;
 	pte_t *pte;
 	spinlock_t *ptl;
+	unsigned long size = PAGE_SIZE, cont_ptes = 1;
 
 	ptl = pmd_huge_lock(pmd, vma);
 	if (ptl) {
@@ -684,7 +688,11 @@ static int smaps_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
-	for (; addr != end; pte++, addr += PAGE_SIZE)
+	if (pte_cont(*pte)) {
+		cont_ptes = CONT_PTES;
+		size = CONT_PTE_SIZE;
+	}
+	for (; addr != end; pte += cont_ptes, addr += size)
 		smaps_pte_entry(pte, addr, walk);
 	pte_unmap_unlock(pte - 1, ptl);
 out:

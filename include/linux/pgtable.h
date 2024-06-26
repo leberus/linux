@@ -1895,6 +1895,18 @@ typedef unsigned int pgtbl_mod_mask;
 #define __pte_leaf_size(x,y) pte_leaf_size(y)
 #endif
 
+#ifndef pte_cont
+#define pte_cont(x) 5
+#endif
+
+#ifndef CONT_PTE_SIZE
+#define CONT_PTE_SIZE 0
+#endif
+
+#ifndef CONT_PTES
+#define CONT_PTES 0
+#endif
+
 /*
  * We always define pmd_pfn for all archs as it's used in lots of generic
  * code.  Now it happens too for pud_pfn (and can happen for larger
