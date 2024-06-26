@@ -123,6 +123,8 @@ static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 	struct vm_area_struct *vma = walk->vma;
 	pte_t *ptep;
 	unsigned char *vec = walk->private;
+	short shift;
+	unsigned long size = PAGE_SIZE, cont_ptes = 1;
 	int nr = (end - addr) >> PAGE_SHIFT;
 
 	ptl = pmd_huge_lock(pmd, vma);
@@ -138,16 +140,20 @@ static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 		walk->action = ACTION_AGAIN;
 		return 0;
 	}
-	for (; addr != end; ptep++, addr += PAGE_SIZE) {
+	if (pte_cont(*ptep)) {
+		cont_ptes = CONT_PTES;
+		size = CONT_PTE_SIZE;
+	}
+	for (; addr != end; ptep += cont_ptes, addr += size) {
 		pte_t pte = ptep_get(ptep);
 
 		/* We need to do cache lookup too for pte markers */
 		if (pte_none_mostly(pte))
-			__mincore_unmapped_range(addr, addr + PAGE_SIZE,
+			__mincore_unmapped_range(addr, addr + size,
 						 vma, vec);
-		else if (pte_present(pte))
-			*vec = 1;
-		else { /* pte is a swap entry */
+		else if (pte_present(pte)) {
+			memset(vec, 1, cont_ptes);
+		} else { /* pte is a swap entry */
 			swp_entry_t entry = pte_to_swp_entry(pte);
 
 			if (non_swap_entry(entry)) {
@@ -155,18 +161,18 @@ static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
 				 * migration or hwpoison entries are always
 				 * uptodate
 				 */
-				*vec = 1;
+				memset(vec, 1, cont_ptes);
 			} else {
 #ifdef CONFIG_SWAP
 				*vec = mincore_page(swap_address_space(entry),
 						    swp_offset(entry));
 #else
 				WARN_ON(1);
-				*vec = 1;
+				memset(vec, 1, cont_ptes);
 #endif
 			}
 		}
-		vec++;
+		vec += cont_ptes;
 	}
 	pte_unmap_unlock(ptep - 1, ptl);
 out:
