@@ -614,4 +614,32 @@ static inline bool vma_has_recency(struct vm_area_struct *vma)
 	return true;
 }
 
+static inline spinlock_t *pmd_huge_lock(pmd_t *pmd, struct vm_area_struct *vma)
+{
+	spinlock_t *ptl;
+
+	if (is_swap_pmd(*pmd) || pmd_leaf(*pmd) || pmd_devmap(*pmd)) {
+		ptl = pmd_lock(vma->vm_mm, pmd);
+		if (likely(is_swap_pmd(*pmd) || pmd_leaf(*pmd) ||
+		    pmd_devmap(*pmd)))
+			return ptl;
+		spin_unlock(ptl);
+	}
+	return NULL;
+}
+
+static inline spinlock_t *pud_huge_lock(pud_t *pud, struct vm_area_struct *vma)
+{
+	spinlock_t *ptl;
+
+	if (pud_leaf(*pud) || pud_devmap(*pud)) {
+		ptl = pud_lock(vma->vm_mm, pud);
+		if (likely(is_swap_pud(*pud) || pud_leaf(*pud) ||
+		    pud_devmap(*pud)))
+			return ptl;
+		spin_unlock(ptl);
+	}
+	return NULL;
+}
+
 #endif
