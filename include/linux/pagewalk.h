@@ -200,4 +200,74 @@ struct folio *folio_walk_start(struct folio_walk *fw,
 	vma_pgtable_walk_end(__vma); \
 } while (0)
 
+/* Likely we can re-use the FW_LEVEL_* levels */
+enum pt_range_walk_level {
+	PTW_PTE_LEVEL,
+	PTW_PMD_LEVEL,
+	PTW_PUD_LEVEL,
+};
+
+enum pt_range_walk_type {
+	PTW_DONE = 1,
+	PTW_NONE,
+	PTW_MARKER,
+	PTW_FOLIO,
+	PTW_PFN,
+	PTW_MIGRATION,
+	PTW_SWAP,
+	PTW_DEVICE,
+	PTW_HWPOISON,
+};
+
+/**
+ * struct pt_range_walk - pt_range_walk()
+ * @page:       exact folio page referenced (if applicable)
+ * @folio:	folio mapped (if any)
+ * size:	size of the folio
+ * @swp_entry:	swp_entry (if any)
+ * @young:	boolean for young pte/pmd (for batching)
+ * @dirty:	boolean for dirty pte/pmd (for batching)
+ * @writable:	boolean for writable pte/pmd (for batching)
+ * @level:      page table level identifying the entry type
+ * @action:	action we should perform
+ * @pte:        pointer to the page table entry (PTW_LEVEL_PTE).
+ * @pmd:        pointer to the page table entry (PTW_LEVEL_PMD).
+ * @pud:        pointer to the page table entry (PTW_LEVEL_PUD).
+ * @ptl:        pointer to the page table lock.
+ *
+ */
+
+struct pt_range_walk {
+	unsigned long pfn;
+	struct page *page;
+	struct folio *folio;
+	int size;
+	swp_entry_t swp_entry;
+	bool present;
+	bool young;
+	bool dirty;
+	bool writable;
+	bool vma_locked;
+	bool is_swp_entry;
+	bool pmd_shared;
+	unsigned long next_addr;
+	enum pt_range_walk_level level;
+	union {
+		pte_t *ptep;
+		pud_t *pudp;
+		pmd_t *pmdp;
+	};
+	union {
+		pte_t pte;
+		pud_t pud;
+		pmd_t pmd;
+	};
+	struct mm_struct *mm;
+	struct vm_area_struct *vma;
+	spinlock_t *ptl;
+};
+
+enum pt_range_walk_type pt_range_walk_start(unsigned long addr, unsigned long end,
+					    struct pt_range_walk *ptw);
+void pt_range_walk_done(struct pt_range_walk *ptw);
 #endif /* _LINUX_PAGEWALK_H */
