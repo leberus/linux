@@ -976,3 +976,271 @@ found:
 	fw->ptl = ptl;
 	return page_folio(page);
 }
+
+bool pt_range_walk_start(unsigned long addr, unsigned long end, struct pt_range_walk *ptw)
+{
+	pgd_t *pgdp;
+	p4d_t *p4dp;
+	pud_t *pudp, pud;
+	pmd_t *pmdp, pmd;
+	pte_t *ptep, pte;
+	spinlock_t *ptl;
+	int nr_batched = 1;
+	struct folio *folio = NULL;
+	bool writable, young, dirty;
+	struct vm_area_struct *vma = ptw->vma;
+	unsigned long curr_addr = addr, next_addr = 0;
+
+	if (curr_addr >= end)
+		return false;
+
+	if (!ptw->mm)
+		return false;
+
+	mmap_assert_locked(ptw->mm);
+
+	if (ptw->ptl) {
+		spin_unlock(ptw->ptl);
+		ptw->ptl = NULL;
+	}
+
+	if (ptw->vma_locked) {
+		vma_pgtable_walk_end(ptw->vma);
+		ptw->vma_locked = false;
+	}
+
+	if (ptw->next_addr)
+		curr_addr = ptw->next_addr;
+
+	/*
+	 * Functions like vmemmap_remap_range call walk_page_range_novma with
+	 * mm_struct being init_mm, so we could already have the 'pgd'.
+	 * For PoC purposes let us assume this function will not be called
+	 * this way yet.
+	 */
+//	if (ptw->pgd)
+//		pgdp = ptw->pgd + pgd_index(addr);
+//	else
+	pgdp = pgd_offset(ptw->mm, addr);
+
+	do {
+again:
+		vma = find_vma(ptw->mm, curr_addr);
+		if (!vma)
+			/* Last vma */
+			return false;
+		/*
+		 * Still need to check for curr_addr being outside vma.
+		 * Let us assume for now that curr_addr falls within the vma
+		 * and that we got a valid vma.
+		 */
+		ptw->vma_locked = true;
+		vma_pgtable_walk_begin(vma);
+		ptw->vma = vma;
+
+		next_addr = pgd_addr_end(curr_addr, end);
+		if (pgd_none_or_clear_bad(pgdp))
+			continue;
+
+		next_addr = p4d_addr_end(curr_addr, end);
+		p4dp = p4d_offset(pgdp, curr_addr);
+		if (p4d_none_or_clear_bad(p4dp))
+			continue;
+
+		next_addr = pud_addr_end(curr_addr, end);
+		pudp = pud_offset(p4dp, curr_addr);
+		pud = pudp_get(pudp);
+		if (pud_none(pud))
+			continue;
+
+		/*
+		 * For now, there are no architectures which supports pgd or p4d
+		 * leafs, pud is the first level that can be a leaf.
+		 */
+		if (IS_ENABLED(CONFIG_PGTABLE_HAS_HUGE_LEAVES) &&
+		    (!pud_present(pud) || pud_leaf(pud))) {
+			ptl = pud_huge_lock(pudp, vma);
+			if (!ptl)
+				goto again;
+
+			pud = pudp_get(pudp);
+			if (pud_present(pud)) {
+				/*
+				 * We will need a routine like folio_pte_batch
+				 * that allows us to batch contiguos puds
+				 */
+				folio = vm_normal_folio_pud(vma, curr_addr, pud);
+			} else if (is_swap_pud(pud)) {
+				/* PUD-hugetlbs can have special swap entries */
+				swp_entry_t entry = pud_to_swp_entry(pud);
+
+				if (is_pfn_swap_entry(entry))
+					folio = pfn_swap_entry_folio(entry);
+			}
+
+			dirty = pud_dirty(pud);
+			young = pud_young(pud);
+			writable = pud_write(pud);
+
+			if (is_vm_hugetlb_page(vma))
+				ptw->type = PTW_HUGETLB;
+			else
+				ptw->type = PTW_THP;
+
+			if (folio) {
+				ptw->dirty = dirty;
+				ptw->young = young;
+				ptw->writable = writable;
+				ptw->ptl = ptl;
+				ptw->folio = folio;
+				ptw->page = folio_page(folio, 0);
+				ptw->level = PTW_PUD_LEVEL;
+				ptw->next_addr = next_addr;
+				ptw->size = folio_size(folio);
+				if (next_addr < end)
+					ptw->action = PTW_ACTION_CONTINUE;
+				else
+					ptw->action = PTW_ACTION_DONE;
+				return true;
+			}
+
+			spin_unlock(ptl);
+			continue;
+                }
+pmd_table:
+		next_addr = pmd_addr_end(curr_addr, end);
+		pmdp = pmd_offset(pudp, curr_addr);
+		pmd = pmdp_get(pmdp);
+		if (pmd_none(pmd))
+			continue;
+
+		if (IS_ENABLED(CONFIG_PGTABLE_HAS_HUGE_LEAVES) &&
+		    (!pmd_present(pmd) || pmd_leaf(pmd))) {
+			ptl = pmd_huge_lock(pmdp, vma);
+			if (!ptl)
+				goto again;
+
+			pmd = pmdp_get(pmdp);
+			if (pmd_none(pmd)) {
+				spin_unlock(ptl);
+				continue;
+			} else if (pmd_present(pmd) && !pmd_leaf(pmd)) {
+				spin_unlock(ptl);
+				goto pte_table;
+			} else if (pmd_present(pmd)) {
+				/*
+				 * We will need a routine like folio_pte_batch
+				 * that allows us to batch contiguos pmds
+				 */
+			        folio = vm_normal_folio_pmd(vma, addr, pmd);
+				ptw->present = true;
+			} else if (is_swap_pmd(pmd)) {
+				swp_entry_t entry = pmd_to_swp_entry(pmd);
+
+				if (is_pfn_swap_entry(entry))
+					folio = pfn_swap_entry_folio(entry);
+			}
+
+			dirty = pmd_dirty(pmd);
+			young = pmd_young(pmd);
+			writable = pmd_write(pmd);
+
+			if (is_vm_hugetlb_page(vma)) {
+				ptw->type = PTW_HUGETLB;
+				if (hugetlb_pmd_shared((pte_t *)pmdp))
+					ptw->pmd_shared = true;
+			} else {
+				ptw->type = PTW_THP;
+			}
+
+			if (folio) {
+				ptw->dirty = dirty;
+				ptw->young = young;
+				ptw->writable = writable;
+				ptw->ptl = ptl;
+				ptw->folio = folio;
+				ptw->page = folio_page(folio, 0);
+				ptw->level = PTW_PMD_LEVEL;
+				ptw->next_addr = next_addr;
+				ptw->size = folio_size(folio);
+				if (next_addr < end)
+					ptw->action = PTW_ACTION_CONTINUE;
+				else
+					ptw->action = PTW_ACTION_DONE;
+				return true;
+			}
+
+			spin_unlock(ptl);
+			continue;
+		}
+pte_table:
+		next_addr = curr_addr + PAGE_SIZE;
+		ptep = pte_offset_map_lock(vma->vm_mm, pmdp, curr_addr, &ptl);
+		if (!ptep)
+			goto again;
+
+		pte = ptep_get(ptep);
+		if (pte_present(pte)) {
+			folio = vm_normal_folio(vma, curr_addr, pte);
+			if (folio_test_large(folio)) {
+			        /* We can batch */
+				int max_nr = folio_size(folio) / PAGE_SIZE;
+				nr_batched = folio_pte_batch(folio, curr_addr,
+							     ptep, pte, max_nr,
+							     0, &writable,
+							     &young, &dirty);
+			} else {
+				young = pte_young(pte);
+				dirty = pte_dirty(pte);
+				writable = pte_write(pte);
+			}
+
+			ptw->writable = writable;
+			ptw->young = young;
+			ptw->dirty = dirty;
+			ptw->present = true;
+			ptw->size = nr_batched * PAGE_SIZE;
+			next_addr += (nr_batched * PAGE_SIZE) - PAGE_SIZE;
+		} else if (is_swap_pte(pte)) {
+			swp_entry_t entry =  pte_to_swp_entry(pte);
+
+		        if (!non_swap_entry(entry)) {
+				ptw->swp_entry = entry;
+				ptw->is_swp_entry = true;
+		        } else if (is_pfn_swap_entry(entry)) {
+				folio = pfn_swap_entry_folio(entry);
+		        }
+		}
+
+		if (is_vm_hugetlb_page(vma))
+			ptw->type = PTW_HUGETLB;
+
+		if (folio || ptw->is_swp_entry) {
+		        ptw->ptl = ptl;
+		        ptw->folio = folio;
+			ptw->page = folio_page(folio, 0);
+		        ptw->level = PTW_PTE_LEVEL;
+		        ptw->next_addr = next_addr;
+
+		        if (ptw->next_addr < end)
+		                ptw->action = PTW_ACTION_CONTINUE;
+		        else
+		                ptw->action = PTW_ACTION_DONE;
+		        return true;
+		}
+
+		spin_unlock(ptl);
+		continue;
+
+        } while (curr_addr = next_addr, curr_addr < end);
+
+	return false;
+}
+
+void pt_range_walk_done(struct pt_range_walk *ptw)
+{
+        if (ptw->ptl)
+                spin_unlock(ptw->ptl);
+	if (ptw->vma_locked)
+		vma_pgtable_walk_end(ptw->vma);
+}
