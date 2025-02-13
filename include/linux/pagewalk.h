@@ -204,4 +204,108 @@ struct folio *folio_walk_start(struct folio_walk *fw,
 	vma_pgtable_walk_end(__vma); \
 } while (0)
 
+typedef int __bitwise pt_type_flags_t;
+
+/*
+ * Types we are interested in returning. Those which are not explicitly set
+ * will be silently ignored by keep walking the page tables.
+ */
+#define PT_TYPE_NONE		((__force pt_type_flags_t)BIT(0))
+#define PT_TYPE_FOLIO		((__force pt_type_flags_t)BIT(1))
+#define PT_TYPE_MARKER		((__force pt_type_flags_t)BIT(2))
+#define PT_TYPE_PFN		((__force pt_type_flags_t)BIT(3))
+#define PT_TYPE_SWAP		((__force pt_type_flags_t)BIT(4))
+#define PT_TYPE_MIGRATION	((__force pt_type_flags_t)BIT(5))
+#define PT_TYPE_DEVICE		((__force pt_type_flags_t)BIT(6))
+#define PT_TYPE_HWPOISON	((__force pt_type_flags_t)BIT(7))
+#define PT_TYPE_ALL		(PT_TYPE_NONE | PT_TYPE_FOLIO | PT_TYPE_MARKER | \
+				 PT_TYPE_PFN | PT_TYPE_SWAP | PT_TYPE_MIGRATION | \
+				 PT_TYPE_DEVICE | PT_TYPE_HWPOISON)
+
+enum pt_range_walk_level {
+	PTW_PUD_LEVEL,
+	PTW_PMD_LEVEL,
+	PTW_PTE_LEVEL,
+};
+
+enum pt_range_walk_type {
+	PTW_ABORT,
+	PTW_DONE,
+	PTW_NONE,
+	PTW_FOLIO,
+	PTW_MARKER,
+	PTW_PFN,
+	PTW_SWAP,
+	PTW_MIGRATION,
+	PTW_DEVICE,
+	PTW_HWPOISON,
+};
+
+/**
+ * struct pt_range_walk - pt_range_walk()
+ * @pfn:	for present non-folios and hwpoison entries
+ * @page:       exact folio page referenced (if applicable)
+ * @folio:	folio mapped (if any)
+ * @nr_entries:	number of contiguous entries of the same type
+ * @size:	size of the folio
+ * @swp_entry:	swp_entry (if any)
+ * @present:	whether it is present in the page tables
+ * @young:	whether the entry is young
+ * @dirty:	whether the entry is dirty
+ * @writable:	whether the entry is writable
+ * @vma_locked: whether we are holding the vma lock
+ * @pmd_shared: only used for hugetlb
+ * @next_addr:	next addr to be used walk the page tables
+ * @level:      page table level
+ * @pte:        pointer to the page table entry (PTW_LEVEL_PTE).
+ * @pmd:        pointer to the page table entry (PTW_LEVEL_PMD).
+ * @pud:        pointer to the page table entry (PTW_LEVEL_PUD).
+ * @mm:		the mm_struct we are walking
+ * @vma:	the vma we are walking
+ * @ptl:        pointer to the page table lock.
+ */
+
+struct pt_range_walk {
+	unsigned long pfn;
+	struct page *page;
+	struct folio *folio;
+	int nr_entries;
+	int size;
+	swp_entry_t swp_entry;
+	bool present;
+	bool young;
+	bool dirty;
+	bool writable;
+	bool vma_locked;
+	bool pmd_shared;
+	unsigned long next_addr;
+	enum pt_range_walk_level level;
+	union {
+		pte_t *ptep;
+		pud_t *pudp;
+		pmd_t *pmdp;
+	};
+	union {
+		pte_t pte;
+		pud_t pud;
+		pmd_t pmd;
+	};
+	struct mm_struct *mm;
+	struct vm_area_struct *vma;
+	spinlock_t *ptl;
+};
+
+enum pt_range_walk_type pt_range_walk(struct pt_range_walk *ptw,
+                                      struct vm_area_struct *vma,
+                                      unsigned long addr, unsigned long end,
+				      pt_type_flags_t flags);
+enum pt_range_walk_type pt_range_walk_start(struct pt_range_walk *ptw,
+					    struct vm_area_struct *vma,
+					    unsigned long addr, unsigned long end,
+					    pt_type_flags_t flags);
+enum pt_range_walk_type pt_range_walk_next(struct pt_range_walk *ptw,
+					   struct vm_area_struct *vma,
+					   unsigned long addr, unsigned long end,
+					   pt_type_flags_t flags);
+void pt_range_walk_done(struct pt_range_walk *ptw);
 #endif /* _LINUX_PAGEWALK_H */
