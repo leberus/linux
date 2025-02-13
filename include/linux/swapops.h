@@ -120,6 +120,31 @@ static inline unsigned long swp_offset_pfn(swp_entry_t entry)
 	return swp_offset(entry) & SWP_PFN_MASK;
 }
 
+#ifdef CONFIG_HUGETLB_PAGE
+static inline int is_swap_pud(pud_t pud)
+{
+	return !pud_none(pud) && !pud_present(pud);
+}
+
+static inline swp_entry_t pud_to_swp_entry(pud_t pud)
+{
+	swp_entry_t arch_entry;
+
+	arch_entry = __pud_to_swp_entry(pud);
+	return swp_entry(__swp_type(arch_entry), __swp_offset(arch_entry));
+}
+#else
+static inline int is_swap_pud(pud_t pud)
+{
+	return false;
+}
+
+static inline swp_entry_t pud_to_swp_entry(pud_t pud)
+{
+	return swp_entry(0, 0);
+}
+#endif
+
 /* check whether a pte points to a swap entry */
 static inline int is_swap_pte(pte_t pte)
 {
