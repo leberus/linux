@@ -233,6 +233,17 @@ static int proc_map_release(struct inode *inode, struct file *file)
 	return seq_release_private(inode, file);
 }
 
+static int proc_map_release_lab(struct inode *inode, struct file *file)
+{
+	struct seq_file *seq = file->private_data;
+	struct proc_maps_private *priv = seq->private;
+
+	if (priv->mm)
+		mmdrop(priv->mm);
+
+	return seq_release_private(inode, file);
+}
+
 static int do_maps_open(struct inode *inode, struct file *file,
 			const struct seq_operations *ops)
 {
@@ -1104,6 +1115,73 @@ static void smap_gather_stats(struct vm_area_struct *vma,
 		walk_page_range(vma->vm_mm, start, vma->vm_end, ops, mss);
 }
 
+static void smap_gather_stats_lab(struct vm_area_struct *vma,
+				  struct mem_size_stats *mss,
+				  unsigned long start)
+{
+	struct pt_range_walk ptw = {
+		.mm = vma->vm_mm
+	};
+	bool ret = true, locked;
+
+	do {
+		if (!start)
+			start = vma->vm_start;
+
+		ret = pt_range_walk_start(start, vma->vm_end, &ptw);
+		locked = !!(vma->vm_flags & VM_LOCKED);
+
+		if (!ptw.folio || !ret)
+			continue;
+
+		switch (ptw.type) {
+		case PTW_HUGETLB:
+			unsigned long size = huge_page_size(hstate_vma(ptw.vma));
+
+			if (!ptw.present || folio_likely_mapped_shared(ptw.folio) ||
+			    ptw.pmd_shared)
+				mss->shared_hugetlb += size;
+			else
+				mss->private_hugetlb += size;
+			break;
+		case PTW_THP:
+			if (folio_test_anon(ptw.folio))
+				mss->anonymous_thp += ptw.size;
+			else if (folio_test_swapbacked(ptw.folio))
+				mss->shmem_thp += ptw.size;
+			else if (folio_is_zone_device(ptw.folio))
+				/* pass */;
+			else
+				mss->file_thp += ptw.size;
+
+			smaps_account(mss, ptw.page, true, ptw.young, ptw.dirty,
+				      locked, ptw.present);
+			break;
+		default:
+			if (ptw.is_swp_entry) {
+				int mapcount;
+
+				mss->swap += PAGE_SIZE;
+				mapcount = swp_swapcount(ptw.swp_entry);
+				if (mapcount >= 2) {
+					u64 pss_delta = (u64)PAGE_SIZE << PSS_SHIFT;
+
+					do_div(pss_delta, mapcount);
+					mss->swap_pss += pss_delta;
+				} else {
+					mss->swap_pss += (u64)PAGE_SIZE << PSS_SHIFT;
+				}
+			}
+
+			smaps_account(mss, ptw.page, true, ptw.young, ptw.dirty,
+				      locked, ptw.present);
+			break;
+		}
+	} while (ret && ptw.action == PTW_ACTION_CONTINUE);
+
+	pt_range_walk_done(&ptw);
+}
+
 #define SEQ_PUT_DEC(str, val) \
 		seq_put_decimal_ull_width(m, str, (val) >> 10, 8)
 
@@ -1154,6 +1232,33 @@ static int show_smap(struct seq_file *m, void *v)
 	struct mem_size_stats mss = {};
 
 	smap_gather_stats(vma, &mss, 0);
+
+	show_map_vma(m, vma);
+
+	SEQ_PUT_DEC("Size:           ", vma->vm_end - vma->vm_start);
+	SEQ_PUT_DEC(" kB\nKernelPageSize: ", vma_kernel_pagesize(vma));
+	SEQ_PUT_DEC(" kB\nMMUPageSize:    ", vma_mmu_pagesize(vma));
+	seq_puts(m, " kB\n");
+
+	__show_smap(m, &mss, false);
+
+	seq_printf(m, "THPeligible:    %8u\n",
+		   !!thp_vma_allowable_orders(vma, vma->vm_flags,
+			   TVA_SMAPS | TVA_ENFORCE_SYSFS, THP_ORDERS_ALL));
+
+	if (arch_pkeys_enabled())
+		seq_printf(m, "ProtectionKey:  %8u\n", vma_pkey(vma));
+	show_smap_vma_flags(m, vma);
+
+	return 0;
+}
+
+static int show_smap_lab(struct seq_file *m, void *v)
+{
+	struct vm_area_struct *vma = v;
+	struct mem_size_stats mss = {};
+
+	smap_gather_stats_lab(vma, &mss, 0);
 
 	show_map_vma(m, vma);
 
@@ -1305,9 +1410,21 @@ static const struct seq_operations proc_pid_smaps_op = {
 	.show	= show_smap
 };
 
+static const struct seq_operations proc_pid_smaps_op_lab = {
+	.start	= m_start,
+	.next	= m_next,
+	.stop	= m_stop,
+	.show	= show_smap_lab
+};
+
 static int pid_smaps_open(struct inode *inode, struct file *file)
 {
 	return do_maps_open(inode, file, &proc_pid_smaps_op);
+}
+
+static int pid_smaps_open_lab(struct inode *inode, struct file *file)
+{
+	return do_maps_open(inode, file, &proc_pid_smaps_op_lab);
 }
 
 static int smaps_rollup_open(struct inode *inode, struct file *file)
@@ -1350,6 +1467,13 @@ static int smaps_rollup_release(struct inode *inode, struct file *file)
 	kfree(priv);
 	return single_release(inode, file);
 }
+
+const struct file_operations proc_pid_smaps_operations_lab = {
+	.open		= pid_smaps_open_lab,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= proc_map_release_lab,
+};
 
 const struct file_operations proc_pid_smaps_operations = {
 	.open		= pid_smaps_open,
