@@ -371,6 +371,17 @@ static int proc_map_release(struct inode *inode, struct file *file)
 	return seq_release_private(inode, file);
 }
 
+static int proc_map_release_lab(struct inode *inode, struct file *file)
+{
+	struct seq_file *seq = file->private_data;
+	struct proc_maps_private *priv = seq->private;
+	
+	if (priv->lock_ctx.mm)
+		mmdrop(priv->lock_ctx.mm);
+
+	return seq_release_private(inode, file);
+}
+
 static int do_maps_open(struct inode *inode, struct file *file,
 			const struct seq_operations *ops)
 {
@@ -1323,6 +1334,89 @@ static void smap_gather_stats(struct vm_area_struct *vma,
 		walk_page_range(vma->vm_mm, start, vma->vm_end, ops, mss);
 }
 
+static void smap_gather_stats_lab(struct vm_area_struct *vma,
+				  struct mem_size_stats *mss,
+				  unsigned long start)
+{
+	struct pt_range_walk ptw = {
+		.mm = vma->vm_mm
+	};
+	enum pt_range_walk_type type;
+	pt_type_flags_t flags = PT_TYPE_ALL;
+
+	if (!start)
+		start = vma->vm_start;
+
+	flags &= ~(PT_TYPE_NONE|PT_TYPE_PFN);
+
+	type = pt_range_walk_start(&ptw, vma, start, vma->vm_end, flags);
+	while (type != PTW_DONE) {
+		bool locked = !!(vma->vm_flags & VM_LOCKED);
+		unsigned long swap_size;
+		bool compound = false;
+		int mapcount;
+
+		switch (type) {
+		case PTW_FOLIO:
+		case PTW_MIGRATION:
+		case PTW_HWPOISON:
+		case PTW_DEVICE:
+			/*
+			 * We either have a folio because vm_normal_folio was
+			 * successful, or because we had a special swap entry
+			 * and could retrieve it with pfn_swap_entry_to_folio.
+			 */
+			if (is_vm_hugetlb_page(vma)) {
+				/* HugeTLB */
+				unsigned long size = huge_page_size(hstate_vma(ptw.vma));
+
+				if (!ptw.present || folio_maybe_mapped_shared(ptw.folio) ||
+				    ptw.pmd_shared)
+					mss->shared_hugetlb += size;
+				else
+					mss->private_hugetlb += size;
+			} else {
+				if (ptw.level == PTW_PMD_LEVEL) {
+					/* THP */
+					compound = true;
+					if (folio_test_anon(ptw.folio))
+						mss->anonymous_thp += ptw.size;
+					else if (folio_test_swapbacked(ptw.folio))
+						mss->shmem_thp += ptw.size;
+					else if (folio_is_zone_device(ptw.folio))
+						/* pass */;
+					else
+						mss->file_thp += ptw.size;
+				}
+
+				smaps_account(mss, ptw.page, compound, ptw.young,
+					      ptw.dirty, locked, ptw.present);
+			}
+			break;
+		case PTW_SWAP:
+			swap_size = PAGE_SIZE * ptw.nr_entries;
+			mss->swap += swap_size;
+			mapcount = swp_swapcount(ptw.swp_entry);
+			if (mapcount >= 2) {
+				u64 pss_delta = (u64)swap_size << PSS_SHIFT;
+
+				do_div(pss_delta, mapcount);
+				mss->swap_pss += pss_delta;
+			} else {
+				mss->swap_pss += (u64)swap_size << PSS_SHIFT;
+			}
+			break;
+		default:
+			/* Ooops */
+			break;
+		}
+
+		type = pt_range_walk_next(&ptw, vma, start, vma->vm_end, flags);
+	}
+
+	pt_range_walk_done(&ptw);
+}
+
 #define SEQ_PUT_DEC(str, val) \
 		seq_put_decimal_ull_width(m, str, (val) >> 10, 8)
 
@@ -1386,6 +1480,33 @@ static int show_smap(struct seq_file *m, void *v)
 	seq_printf(m, "THPeligible:    %8u\n",
 		   !!thp_vma_allowable_orders(vma, vma->vm_flags, TVA_SMAPS,
 					      THP_ORDERS_ALL));
+
+	if (arch_pkeys_enabled())
+		seq_printf(m, "ProtectionKey:  %8u\n", vma_pkey(vma));
+	show_smap_vma_flags(m, vma);
+
+	return 0;
+}
+
+static int show_smap_lab(struct seq_file *m, void *v)
+{
+	struct vm_area_struct *vma = v;
+	struct mem_size_stats mss = {};
+
+	smap_gather_stats_lab(vma, &mss, 0);
+
+	show_map_vma(m, vma);
+
+	SEQ_PUT_DEC("Size:           ", vma->vm_end - vma->vm_start);
+	SEQ_PUT_DEC(" kB\nKernelPageSize: ", vma_kernel_pagesize(vma));
+	SEQ_PUT_DEC(" kB\nMMUPageSize:    ", vma_mmu_pagesize(vma));
+	seq_puts(m, " kB\n");
+
+	__show_smap(m, &mss, false);
+
+	seq_printf(m, "THPeligible:    %8u\n",
+		   !!thp_vma_allowable_orders(vma, vma->vm_flags, TVA_SMAPS,
+			   		      THP_ORDERS_ALL));
 
 	if (arch_pkeys_enabled())
 		seq_printf(m, "ProtectionKey:  %8u\n", vma_pkey(vma));
@@ -1524,9 +1645,21 @@ static const struct seq_operations proc_pid_smaps_op = {
 	.show	= show_smap
 };
 
+static const struct seq_operations proc_pid_smaps_op_lab = {
+	.start	= m_start,
+	.next	= m_next,
+	.stop	= m_stop,
+	.show	= show_smap_lab
+};
+
 static int pid_smaps_open(struct inode *inode, struct file *file)
 {
 	return do_maps_open(inode, file, &proc_pid_smaps_op);
+}
+
+static int pid_smaps_open_lab(struct inode *inode, struct file *file)
+{
+	return do_maps_open(inode, file, &proc_pid_smaps_op_lab);
 }
 
 static int smaps_rollup_open(struct inode *inode, struct file *file)
@@ -1569,6 +1702,13 @@ static int smaps_rollup_release(struct inode *inode, struct file *file)
 	kfree(priv);
 	return single_release(inode, file);
 }
+
+const struct file_operations proc_pid_smaps_operations_lab = {
+	.open		= pid_smaps_open_lab,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= proc_map_release_lab,
+};
 
 const struct file_operations proc_pid_smaps_operations = {
 	.open		= pid_smaps_open,
