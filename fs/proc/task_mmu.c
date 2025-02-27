@@ -3512,6 +3512,118 @@ out:
 	return 0;
 }
 
+/*
+ * Display pages allocated per node and memory policy via /proc.
+ */
+static int show_numa_map_lab(struct seq_file *m, void *v)
+{
+	struct numa_maps_private *numa_priv = m->private;
+	struct proc_maps_private *proc_priv = &numa_priv->proc_maps;
+	struct vm_area_struct *vma = v;
+	struct numa_maps *md = &numa_priv->md;
+	struct file *file = vma->vm_file;
+	struct mm_struct *mm = vma->vm_mm;
+	struct pt_range_walk ptw = {
+		.mm = mm
+	};
+	enum pt_range_walk_type type;
+	pt_type_flags_t flags;
+	bool ret = true;
+	char buffer[64];
+	struct mempolicy *pol;
+	pgoff_t ilx;
+	int nr_pages;
+	int nid;
+
+	if (!mm)
+		return 0;
+
+	/* Ensure we start with an empty set of numa_maps statistics. */
+	memset(md, 0, sizeof(*md));
+
+	pol = __get_vma_policy(vma, vma->vm_start, &ilx);
+	if (pol) {
+		mpol_to_str(buffer, sizeof(buffer), pol);
+		mpol_cond_put(pol);
+	} else {
+		mpol_to_str(buffer, sizeof(buffer), proc_priv->task_mempolicy);
+	}
+
+	seq_printf(m, "%08lx %s", vma->vm_start, buffer);
+
+	if (file) {
+		seq_puts(m, " file=");
+		seq_path(m, file_user_path(file), "\n\t= ");
+	} else if (vma_is_initial_heap(vma)) {
+		seq_puts(m, " heap");
+	} else if (vma_is_initial_stack(vma)) {
+		seq_puts(m, " stack");
+	}
+
+	if (is_vm_hugetlb_page(vma))
+		seq_puts(m, " huge");
+
+	flags = PT_TYPE_FOLIO;
+	type = pt_range_walk_start(&ptw, vma, vma->vm_start, vma->vm_end, flags);
+	while (type != PTW_DONE) {
+
+		if (!ptw.folio || !ptw.page || PageReserved(ptw.page))
+			goto not_found;
+
+		nid = page_to_nid(ptw.page);
+		if (!node_isset(nid, node_states[N_MEMORY]))
+			goto not_found;
+
+		if (is_vm_hugetlb_page(vma))
+			/*
+			 * As opposed to THP, HugeTLB counts the entire huge
+			 * page as one unit size.
+			 */
+			nr_pages = 1;
+		else
+			nr_pages = folio_size(ptw.folio) / PAGE_SIZE;
+
+		gather_stats(ptw.page, md, ptw.dirty, nr_pages);
+not_found:
+		type = pt_range_walk_next(&ptw, vma, vma->vm_start, vma->vm_end, flags);
+
+	}
+	pt_range_walk_done(&ptw);
+
+	if (!md->pages)
+		goto out;
+
+	if (md->anon)
+		seq_printf(m, " anon=%lu", md->anon);
+
+	if (md->dirty)
+		seq_printf(m, " dirty=%lu", md->dirty);
+
+	if (md->pages != md->anon && md->pages != md->dirty)
+		seq_printf(m, " mapped=%lu", md->pages);
+
+	if (md->mapcount_max > 1)
+		seq_printf(m, " mapmax=%lu", md->mapcount_max);
+
+	if (md->swapcache)
+		seq_printf(m, " swapcache=%lu", md->swapcache);
+
+	if (md->active < md->pages && !is_vm_hugetlb_page(vma))
+		seq_printf(m, " active=%lu", md->active);
+
+	if (md->writeback)
+		seq_printf(m, " writeback=%lu", md->writeback);
+
+	for_each_node_state(nid, N_MEMORY)
+	        if (md->node[nid])
+			seq_printf(m, " N%d=%lu", nid, md->node[nid]);
+
+	seq_printf(m, " kernelpagesize_kB=%lu", vma_kernel_pagesize(vma) >> 10);
+out:
+	seq_putc(m, '\n');
+	return 0;
+}
+
 static const struct seq_operations proc_pid_numa_maps_op = {
 	.start  = m_start,
 	.next   = m_next,
@@ -3527,6 +3639,26 @@ static int pid_numa_maps_open(struct inode *inode, struct file *file)
 
 const struct file_operations proc_pid_numa_maps_operations = {
 	.open		= pid_numa_maps_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= proc_map_release,
+};
+
+static const struct seq_operations proc_pid_numa_maps_op_lab = {
+	.start  = m_start,
+	.next   = m_next,
+	.stop   = m_stop,
+	.show   = show_numa_map_lab,
+};
+
+static int pid_numa_maps_open_lab(struct inode *inode, struct file *file)
+{
+	return proc_maps_open(inode, file, &proc_pid_numa_maps_op_lab,
+			      sizeof(struct numa_maps_private));
+}
+
+const struct file_operations proc_pid_numa_maps_operations_lab = {
+	.open		= pid_numa_maps_open_lab,
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= proc_map_release,
