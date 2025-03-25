@@ -5954,8 +5954,8 @@ static int slab_mem_going_online_callback(void *arg)
 {
 	struct kmem_cache_node *n;
 	struct kmem_cache *s;
-	struct memory_notify *marg = arg;
-	int nid = marg->status_change_nid_normal;
+	struct node_notify *narg = arg;
+	int nid = narg->status_change_nid_normal;
 	int ret = 0;
 
 	/*
@@ -6007,18 +6007,18 @@ static int slab_memory_callback(struct notifier_block *self,
 	int ret = 0;
 
 	switch (action) {
-	case MEM_GOING_ONLINE:
+	case NODE_BECOMING_MEM_AWARE:
 		ret = slab_mem_going_online_callback(arg);
 		break;
-	case MEM_GOING_OFFLINE:
+	case NODE_BECOMING_MEMORYLESS:
 		ret = slab_mem_going_offline_callback(arg);
 		break;
-	case MEM_OFFLINE:
-	case MEM_CANCEL_ONLINE:
+	case NODE_BECAME_MEMORYLESS:
+	case NODE_CANCEL_MEM_AWARE:
 		slab_mem_offline_callback(arg);
 		break;
-	case MEM_ONLINE:
-	case MEM_CANCEL_OFFLINE:
+	case NODE_BECAME_MEM_AWARE:
+	case NODE_CANCEL_MEMORYLESS:
 		break;
 	}
 	if (ret)
@@ -6094,7 +6094,7 @@ void __init kmem_cache_init(void)
 			sizeof(struct kmem_cache_node),
 			SLAB_HWCACHE_ALIGN | SLAB_NO_OBJ_EXT, 0, 0);
 
-	hotplug_memory_notifier(slab_memory_callback, SLAB_CALLBACK_PRI);
+	hotplug_node_notifier(slab_memory_callback, SLAB_CALLBACK_PRI);
 
 	/* Able to allocate the per node structures */
 	slab_state = PARTIAL;

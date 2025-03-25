@@ -701,7 +701,7 @@ static void online_pages_range(unsigned long start_pfn, unsigned long nr_pages)
 
 /* check which state of node_states will be changed when online memory */
 static void node_states_check_changes_online(unsigned long nr_pages,
-	struct zone *zone, struct memory_notify *arg)
+	struct zone *zone, struct node_notify *arg)
 {
 	int nid = zone_to_nid(zone);
 
@@ -714,7 +714,7 @@ static void node_states_check_changes_online(unsigned long nr_pages,
 		arg->status_change_nid_normal = nid;
 }
 
-static void node_states_set_node(int node, struct memory_notify *arg)
+static void node_states_set_node(int node, struct node_notify *arg)
 {
 	if (arg->status_change_nid_normal >= 0)
 		node_set_state(node, N_NORMAL_MEMORY);
@@ -1177,7 +1177,9 @@ int online_pages(unsigned long pfn, unsigned long nr_pages,
 	int need_zonelists_rebuild = 0;
 	const int nid = zone_to_nid(zone);
 	int ret;
-	struct memory_notify arg;
+	struct memory_notify mem_arg;
+	struct node_notify node_arg;
+	bool cancel_mem_notifier_on_err = false, cancel_node_notifier_on_err = false;
 
 	/*
 	 * {on,off}lining is constrained to full memory sections (or more
@@ -1194,11 +1196,23 @@ int online_pages(unsigned long pfn, unsigned long nr_pages,
 	/* associate pfn range with the zone */
 	move_pfn_range_to_zone(zone, pfn, nr_pages, NULL, MIGRATE_ISOLATE);
 
-	arg.start_pfn = pfn;
-	arg.nr_pages = nr_pages;
-	node_states_check_changes_online(nr_pages, zone, &arg);
+	mem_arg.start_pfn = pfn;
+	mem_arg.nr_pages = nr_pages;
+	node_states_check_changes_online(nr_pages, zone, &node_arg);
 
-	ret = memory_notify(MEM_GOING_ONLINE, &arg);
+	if (node_arg.status_change_nid >= 0) {
+		/* Node is becoming memory aware. Notify consumers */
+		cancel_node_notifier_on_err = true;
+		ret = node_notify(NODE_BECOMING_MEM_AWARE, &node_arg);
+		ret = notifier_to_errno(ret);
+		if (ret)
+			goto failed_addition;
+	}
+
+	cancel_mem_notifier_on_err = true;
+	mem_arg.status_change_nid = node_arg.status_change_nid;
+	mem_arg.status_change_nid_normal = node_arg.status_change_nid_normal;
+	ret = memory_notify(MEM_GOING_ONLINE, &mem_arg);
 	ret = notifier_to_errno(ret);
 	if (ret)
 		goto failed_addition;
@@ -1224,7 +1238,7 @@ int online_pages(unsigned long pfn, unsigned long nr_pages,
 	online_pages_range(pfn, nr_pages);
 	adjust_present_page_count(pfn_to_page(pfn), group, nr_pages);
 
-	node_states_set_node(nid, &arg);
+	node_states_set_node(nid, &node_arg);
 	if (need_zonelists_rebuild)
 		build_all_zonelists(NULL);
 
@@ -1245,16 +1259,26 @@ int online_pages(unsigned long pfn, unsigned long nr_pages,
 	kswapd_run(nid);
 	kcompactd_run(nid);
 
+	if (node_arg.status_change_nid >= 0)
+		/*
+		 * Node went from memoryless to have memory. Notifiy interested
+		 * consumers
+		 */
+		node_notify(NODE_BECAME_MEM_AWARE, &node_arg);
+
 	writeback_set_ratelimit();
 
-	memory_notify(MEM_ONLINE, &arg);
+	memory_notify(MEM_ONLINE, &mem_arg);
 	return 0;
 
 failed_addition:
 	pr_debug("online_pages [mem %#010llx-%#010llx] failed\n",
 		 (unsigned long long) pfn << PAGE_SHIFT,
 		 (((unsigned long long) pfn + nr_pages) << PAGE_SHIFT) - 1);
-	memory_notify(MEM_CANCEL_ONLINE, &arg);
+	if (cancel_node_notifier_on_err)
+		node_notify(NODE_CANCEL_MEM_AWARE, &node_arg);
+	if (cancel_mem_notifier_on_err)
+		memory_notify(MEM_CANCEL_ONLINE, &mem_arg);
 	remove_pfn_range_from_zone(zone, pfn, nr_pages);
 	return ret;
 }
@@ -1898,7 +1922,7 @@ early_param("movable_node", cmdline_parse_movable_node);
 
 /* check which state of node_states will be changed when offline memory */
 static void node_states_check_changes_offline(unsigned long nr_pages,
-		struct zone *zone, struct memory_notify *arg)
+		struct zone *zone, struct node_notify *arg)
 {
 	struct pglist_data *pgdat = zone->zone_pgdat;
 	unsigned long present_pages = 0;
@@ -1935,7 +1959,7 @@ static void node_states_check_changes_offline(unsigned long nr_pages,
 		arg->status_change_nid = zone_to_nid(zone);
 }
 
-static void node_states_clear_node(int node, struct memory_notify *arg)
+static void node_states_clear_node(int node, struct node_notify *arg)
 {
 	if (arg->status_change_nid_normal >= 0)
 		node_clear_state(node, N_NORMAL_MEMORY);
@@ -1963,7 +1987,9 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 	unsigned long pfn, managed_pages, system_ram_pages = 0;
 	const int node = zone_to_nid(zone);
 	unsigned long flags;
-	struct memory_notify arg;
+	struct memory_notify mem_arg;
+	struct node_notify node_arg;
+	bool cancel_mem_notifier_on_err = false, cancel_node_notifier_on_err = false;
 	char *reason;
 	int ret;
 
@@ -2022,11 +2048,22 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 		goto failed_removal_pcplists_disabled;
 	}
 
-	arg.start_pfn = start_pfn;
-	arg.nr_pages = nr_pages;
-	node_states_check_changes_offline(nr_pages, zone, &arg);
+	mem_arg.start_pfn = start_pfn;
+	mem_arg.nr_pages = nr_pages;
+	node_states_check_changes_offline(nr_pages, zone, &node_arg);
 
-	ret = memory_notify(MEM_GOING_OFFLINE, &arg);
+	if (node_arg.status_change_nid >= 0) {
+		cancel_node_notifier_on_err = true;
+		ret = node_notify(NODE_BECOMING_MEMORYLESS, &node_arg);
+		ret = notifier_to_errno(ret);
+		if (ret)
+			goto failed_removal_isolated;
+	}
+
+	cancel_mem_notifier_on_err = true;
+	mem_arg.status_change_nid = node_arg.status_change_nid;
+	mem_arg.status_change_nid_normal = node_arg.status_change_nid_normal;
+	ret = memory_notify(MEM_GOING_OFFLINE, &mem_arg);
 	ret = notifier_to_errno(ret);
 	if (ret) {
 		reason = "notifier failure";
@@ -2106,27 +2143,32 @@ int offline_pages(unsigned long start_pfn, unsigned long nr_pages,
 	 * Make sure to mark the node as memory-less before rebuilding the zone
 	 * list. Otherwise this node would still appear in the fallback lists.
 	 */
-	node_states_clear_node(node, &arg);
+	node_states_clear_node(node, &node_arg);
 	if (!populated_zone(zone)) {
 		zone_pcp_reset(zone);
 		build_all_zonelists(NULL);
 	}
 
-	if (arg.status_change_nid >= 0) {
+	if (node_arg.status_change_nid >= 0) {
 		kcompactd_stop(node);
 		kswapd_stop(node);
+		/*Node went memoryless. Notifiy interested consumers */
+		node_notify(NODE_BECAME_MEMORYLESS, &node_arg);
 	}
 
 	writeback_set_ratelimit();
 
-	memory_notify(MEM_OFFLINE, &arg);
+	memory_notify(MEM_OFFLINE, &mem_arg);
 	remove_pfn_range_from_zone(zone, start_pfn, nr_pages);
 	return 0;
 
 failed_removal_isolated:
 	/* pushback to free area */
 	undo_isolate_page_range(start_pfn, end_pfn, MIGRATE_MOVABLE);
-	memory_notify(MEM_CANCEL_OFFLINE, &arg);
+	if (cancel_node_notifier_on_err)
+		node_notify(NODE_CANCEL_MEMORYLESS, &node_arg);
+	if (cancel_mem_notifier_on_err)
+		memory_notify(MEM_CANCEL_OFFLINE, &mem_arg);
 failed_removal_pcplists_disabled:
 	lru_cache_enable();
 	zone_pcp_enable(zone);
