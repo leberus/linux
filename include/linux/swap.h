@@ -62,6 +62,8 @@ static inline int current_is_kswapd(void)
 #define SWP_PTE_MARKER_NUM 1
 #define SWP_PTE_MARKER     (MAX_SWAPFILES + SWP_HWPOISON_NUM + \
 			    SWP_MIGRATION_NUM + SWP_DEVICE_NUM)
+#define SWP_PUD_MARKER SWP_PTE_MARKER
+#define SWP_PMD_MARKER SWP_PTE_MARKER
 
 /*
  * Unaddressable device memory support. See include/linux/hmm.h and

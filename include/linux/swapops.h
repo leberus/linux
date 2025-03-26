@@ -145,6 +145,38 @@ static inline swp_entry_t pud_to_swp_entry(pud_t pud)
 }
 #endif
 
+#if defined (CONFIG_ARCH_ENABLE_THP_MIGRATION) || defined (CONFIG_HUGETLB_PAGE)
+static inline swp_entry_t pmd_to_swp_entry(pmd_t pmd)
+{
+	swp_entry_t arch_entry;
+
+	if (pmd_swp_soft_dirty(pmd))
+		pmd = pmd_swp_clear_soft_dirty(pmd);
+	if (pmd_swp_uffd_wp(pmd))
+		pmd = pmd_swp_clear_uffd_wp(pmd);
+	arch_entry = __pmd_to_swp_entry(pmd);
+	return swp_entry(__swp_type(arch_entry), __swp_offset(arch_entry));
+}
+
+static inline pmd_t swp_entry_to_pmd(swp_entry_t entry)
+{
+	swp_entry_t arch_entry;
+
+	arch_entry = __swp_entry(swp_type(entry), swp_offset(entry));
+	return __swp_entry_to_pmd(arch_entry);
+}
+#else  /* CONFIG_ARCH_ENABLE_THP_MIGRATION ||| CONFIG_HUGETLB_PAGE */
+static inline swp_entry_t pmd_to_swp_entry(pmd_t pmd)
+{
+	return swp_entry(0, 0);
+}
+
+static inline pmd_t swp_entry_to_pmd(swp_entry_t entry)
+{
+	return __pmd(0);
+}
+#endif  /* CONFIG_ARCH_ENABLE_THP_MIGRATION || CONFIG_HUGETLB_PAGE */
+
 /* check whether a pte points to a swap entry */
 static inline int is_swap_pte(pte_t pte)
 {
@@ -425,6 +457,8 @@ static inline int is_hwpoison_entry(swp_entry_t swp)
 }
 #endif
 
+typedef unsigned long pud_marker;
+typedef unsigned long pmd_marker;
 typedef unsigned long pte_marker;
 
 #define  PTE_MARKER_UFFD_WP			BIT(0)
@@ -445,6 +479,53 @@ typedef unsigned long pte_marker;
  */
 #define  PTE_MARKER_GUARD			BIT(2)
 #define  PTE_MARKER_MASK			(BIT(3) - 1)
+
+#define  PUD_MARKER_MASK			PTE_MARKER_MASK
+#define  PMD_MARKER_MASK			PTE_MARKER_MASK
+
+/*
+ * NOTE: PUD/PMD markers are only used for hugetlb, as hugetlb pages cannot
+ * get split, so it should not be used by anything else.
+ */
+static inline swp_entry_t make_pud_marker_entry(pud_marker marker)
+{
+	return swp_entry(SWP_PUD_MARKER, marker);
+}
+
+static inline bool is_pud_marker_entry(swp_entry_t entry)
+{
+	return swp_type(entry) == SWP_PUD_MARKER;
+}
+
+static inline pte_marker pud_marker_get(swp_entry_t entry)
+{
+	return swp_offset(entry) & PUD_MARKER_MASK;
+}
+
+static inline bool is_pud_marker(pud_t pud)
+{
+	return is_swap_pud(pud) && is_pud_marker_entry(pud_to_swp_entry(pud));
+}
+
+static inline swp_entry_t make_pmd_marker_entry(pmd_marker marker)
+{
+	return swp_entry(SWP_PMD_MARKER, marker);
+}
+
+static inline bool is_pmd_marker_entry(swp_entry_t entry)
+{
+	return swp_type(entry) == SWP_PMD_MARKER;
+}
+
+static inline pte_marker pmd_marker_get(swp_entry_t entry)
+{
+	return swp_offset(entry) & PMD_MARKER_MASK;
+}
+
+static inline bool is_pmd_marker(pmd_t pmd)
+{
+	return is_swap_pmd(pmd) && is_pmd_marker_entry(pmd_to_swp_entry(pmd));
+}
 
 static inline swp_entry_t make_pte_marker_entry(pte_marker marker)
 {
@@ -555,7 +636,12 @@ static inline bool is_pfn_swap_entry(swp_entry_t entry)
 
 struct page_vma_mapped_walk;
 
-#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
+static inline int non_swap_entry(swp_entry_t entry)
+{
+	return swp_type(entry) >= MAX_SWAPFILES;
+}
+
+#if defined (CONFIG_ARCH_ENABLE_THP_MIGRATION) || defined(CONFIG_HUGETLB_PAGE)
 extern int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
 		struct page *page);
 
@@ -564,31 +650,11 @@ extern void remove_migration_pmd(struct page_vma_mapped_walk *pvmw,
 
 extern void pmd_migration_entry_wait(struct mm_struct *mm, pmd_t *pmd);
 
-static inline swp_entry_t pmd_to_swp_entry(pmd_t pmd)
-{
-	swp_entry_t arch_entry;
-
-	if (pmd_swp_soft_dirty(pmd))
-		pmd = pmd_swp_clear_soft_dirty(pmd);
-	if (pmd_swp_uffd_wp(pmd))
-		pmd = pmd_swp_clear_uffd_wp(pmd);
-	arch_entry = __pmd_to_swp_entry(pmd);
-	return swp_entry(__swp_type(arch_entry), __swp_offset(arch_entry));
-}
-
-static inline pmd_t swp_entry_to_pmd(swp_entry_t entry)
-{
-	swp_entry_t arch_entry;
-
-	arch_entry = __swp_entry(swp_type(entry), swp_offset(entry));
-	return __swp_entry_to_pmd(arch_entry);
-}
-
 static inline int is_pmd_migration_entry(pmd_t pmd)
 {
-	return is_swap_pmd(pmd) && is_migration_entry(pmd_to_swp_entry(pmd));
+       return is_swap_pmd(pmd) && is_migration_entry(pmd_to_swp_entry(pmd));
 }
-#else  /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
+#else /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
 static inline int set_pmd_migration_entry(struct page_vma_mapped_walk *pvmw,
 		struct page *page)
 {
@@ -603,26 +669,10 @@ static inline void remove_migration_pmd(struct page_vma_mapped_walk *pvmw,
 
 static inline void pmd_migration_entry_wait(struct mm_struct *m, pmd_t *p) { }
 
-static inline swp_entry_t pmd_to_swp_entry(pmd_t pmd)
-{
-	return swp_entry(0, 0);
-}
-
-static inline pmd_t swp_entry_to_pmd(swp_entry_t entry)
-{
-	return __pmd(0);
-}
-
 static inline int is_pmd_migration_entry(pmd_t pmd)
 {
 	return 0;
 }
-#endif  /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
-
-static inline int non_swap_entry(swp_entry_t entry)
-{
-	return swp_type(entry) >= MAX_SWAPFILES;
-}
-
+#endif /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
 #endif /* CONFIG_MMU */
 #endif /* _LINUX_SWAPOPS_H */
