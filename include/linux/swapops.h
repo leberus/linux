@@ -446,6 +446,53 @@ typedef unsigned long pte_marker;
 #define  PTE_MARKER_GUARD			BIT(2)
 #define  PTE_MARKER_MASK			(BIT(3) - 1)
 
+#define  PUD_MARKER_MASK			PTE_MARKER_MASK
+#define  PMD_MARKER_MASK			PTE_MARKER_MASK
+
+/*
+ * NOTE: PUD/PMD markers are only used for hugetlb, as hugetlb pages cannot
+ * get split, so it should not be used by anything else.
+ */
+static inline swp_entry_t make_pud_marker_entry(pud_marker marker)
+{
+	return swp_entry(SWP_PUD_MARKER, marker);
+}
+
+static inline bool is_pud_marker_entry(swp_entry_t entry)
+{
+	return swp_type(entry) == SWP_PUD_MARKER;
+}
+
+static inline pte_marker pud_marker_get(swp_entry_t entry)
+{
+	return swp_offset(entry) & PUD_MARKER_MASK;
+}
+
+static inline bool is_pud_marker(pud_t pud)
+{
+	return is_swap_pte(pud) && is_pud_marker_entry(pud_to_swp_entry(pte));
+}
+
+static inline swp_entry_t make_pmd_marker_entry(pmd_marker marker)
+{
+	return swp_entry(SWP_PMD_MARKER, marker);
+}
+
+static inline bool is_pmd_marker_entry(swp_entry_t entry)
+{
+	return swp_type(entry) == SWP_PMD_MARKER;
+}
+
+static inline pte_marker pmd_marker_get(swp_entry_t entry)
+{
+	return swp_offset(entry) & PMD_MARKER_MASK;
+}
+
+static inline bool is_pmd_marker(pmd_t pmd)
+{
+	return is_swap_pte(pmd) && is_pmd_marker_entry(pmd_to_swp_entry(pte));
+}
+
 static inline swp_entry_t make_pte_marker_entry(pte_marker marker)
 {
 	return swp_entry(SWP_PTE_MARKER, marker);
