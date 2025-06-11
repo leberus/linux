@@ -1017,17 +1017,6 @@ static long region_count(struct resv_map *resv, long f, long t)
 	return chg;
 }
 
-/*
- * Convert the address within this vma to the page offset within
- * the mapping, huge page units here.
- */
-static pgoff_t vma_hugecache_offset(struct hstate *h,
-			struct vm_area_struct *vma, unsigned long address)
-{
-	return ((address - vma->vm_start) >> huge_page_shift(h)) +
-			(vma->vm_pgoff >> huge_page_order(h));
-}
-
 /**
  * vma_kernel_pagesize - Page size granularity for this VMA.
  * @vma: The user mapping.
@@ -6670,28 +6659,16 @@ u32 hugetlb_fault_mutex_hash(struct address_space *mapping, pgoff_t idx)
 }
 #endif
 
-vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
-			unsigned long address, unsigned int flags)
+vm_fault_t hugetlb_fault(struct vm_fault *vmf)
 {
 	vm_fault_t ret;
 	u32 hash;
+	struct vm_area_struct *vma = vmf->vma;
+	unsigned long flags = vmf->flags;
+	struct mm_struct *mm = vma->vm_mm;
 	struct folio *folio = NULL;
 	struct hstate *h = hstate_vma(vma);
 	struct address_space *mapping;
-	struct vm_fault vmf = {
-		.vma = vma,
-		.address = address & huge_page_mask(h),
-		.real_address = address,
-		.flags = flags,
-		.pgoff = vma_hugecache_offset(h, vma,
-				address & huge_page_mask(h)),
-		/* TODO: Track hugetlb faults using vm_fault */
-
-		/*
-		 * Some fields may not be initialized, be careful as it may
-		 * be hard to debug if called functions make assumptions
-		 */
-	};
 
 	/*
 	 * Serialize hugepage allocation and instantiation, so that we don't
@@ -6699,27 +6676,27 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	 * the same page in the page cache.
 	 */
 	mapping = vma->vm_file->f_mapping;
-	hash = hugetlb_fault_mutex_hash(mapping, vmf.pgoff);
+	hash = hugetlb_fault_mutex_hash(mapping, vmf->pgoff);
 	mutex_lock(&hugetlb_fault_mutex_table[hash]);
 
 	/*
 	 * Acquire vma lock before calling huge_pte_alloc and hold
-	 * until finished with vmf.pte.  This prevents huge_pmd_unshare from
-	 * being called elsewhere and making the vmf.pte no longer valid.
+	 * until finished with vmf->pte.  This prevents huge_pmd_unshare from
+	 * being called elsewhere and making the vmf->pte no longer valid.
 	 */
 	hugetlb_vma_lock_read(vma);
-	vmf.pte = huge_pte_alloc(mm, vma, vmf.address, huge_page_size(h));
-	if (!vmf.pte) {
+	vmf->pte = huge_pte_alloc(mm, vma, vmf->address, huge_page_size(h));
+	if (!vmf->pte) {
 		hugetlb_vma_unlock_read(vma);
 		mutex_unlock(&hugetlb_fault_mutex_table[hash]);
 		return VM_FAULT_OOM;
 	}
 
-	vmf.orig_pte = huge_ptep_get(mm, vmf.address, vmf.pte);
-	if (huge_pte_none_mostly(vmf.orig_pte)) {
-		if (is_pte_marker(vmf.orig_pte)) {
+	vmf->orig_pte = huge_ptep_get(mm, vmf->address, vmf->pte);
+	if (huge_pte_none_mostly(vmf->orig_pte)) {
+		if (is_pte_marker(vmf->orig_pte)) {
 			pte_marker marker =
-				pte_marker_get(pte_to_swp_entry(vmf.orig_pte));
+				pte_marker_get(pte_to_swp_entry(vmf->orig_pte));
 
 			if (marker & PTE_MARKER_POISONED) {
 				ret = VM_FAULT_HWPOISON_LARGE |
@@ -6738,14 +6715,14 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 		 * hugetlb_no_page will drop vma lock and hugetlb fault
 		 * mutex internally, which make us return immediately.
 		 */
-		return hugetlb_no_page(mapping, &vmf);
+		return hugetlb_no_page(mapping, vmf);
 	}
 
 	ret = 0;
 
 	/* Not present, either a migration or a hwpoisoned entry */
-	if (!pte_present(vmf.orig_pte)) {
-		if (is_hugetlb_entry_migration(vmf.orig_pte)) {
+	if (!pte_present(vmf->orig_pte)) {
+		if (is_hugetlb_entry_migration(vmf->orig_pte)) {
 			/*
 			 * Release the hugetlb fault lock now, but retain
 			 * the vma lock, because it is needed to guard the
@@ -6754,9 +6731,9 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 			 * be released there.
 			 */
 			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
-			migration_entry_wait_huge(vma, vmf.address, vmf.pte);
+			migration_entry_wait_huge(vma, vmf->address, vmf->pte);
 			return 0;
-		} else if (is_hugetlb_entry_hwpoisoned(vmf.orig_pte))
+		} else if (is_hugetlb_entry_hwpoisoned(vmf->orig_pte))
 			ret = VM_FAULT_HWPOISON_LARGE |
 			    VM_FAULT_SET_HINDEX(hstate_index(h));
 		goto out_mutex;
@@ -6769,33 +6746,33 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	 * spinlock.
 	 */
 	if ((flags & (FAULT_FLAG_WRITE|FAULT_FLAG_UNSHARE)) &&
-	    !(vma->vm_flags & VM_MAYSHARE) && !huge_pte_write(vmf.orig_pte)) {
-		if (vma_needs_reservation(h, vma, vmf.address) < 0) {
+	    !(vma->vm_flags & VM_MAYSHARE) && !huge_pte_write(vmf->orig_pte)) {
+		if (vma_needs_reservation(h, vma, vmf->address) < 0) {
 			ret = VM_FAULT_OOM;
 			goto out_mutex;
 		}
 		/* Just decrements count, does not deallocate */
-		vma_end_reservation(h, vma, vmf.address);
+		vma_end_reservation(h, vma, vmf->address);
 	}
 
-	vmf.ptl = huge_pte_lock(h, mm, vmf.pte);
+	vmf->ptl = huge_pte_lock(h, mm, vmf->pte);
 
 	/* Check for a racing update before calling hugetlb_wp() */
-	if (unlikely(!pte_same(vmf.orig_pte, huge_ptep_get(mm, vmf.address, vmf.pte))))
+	if (unlikely(!pte_same(vmf->orig_pte, huge_ptep_get(mm, vmf->address, vmf->pte))))
 		goto out_ptl;
 
 	/* Handle userfault-wp first, before trying to lock more pages */
-	if (userfaultfd_wp(vma) && huge_pte_uffd_wp(huge_ptep_get(mm, vmf.address, vmf.pte)) &&
-	    (flags & FAULT_FLAG_WRITE) && !huge_pte_write(vmf.orig_pte)) {
+	if (userfaultfd_wp(vma) && huge_pte_uffd_wp(huge_ptep_get(mm, vmf->address, vmf->pte)) &&
+	    (flags & FAULT_FLAG_WRITE) && !huge_pte_write(vmf->orig_pte)) {
 		if (!userfaultfd_wp_async(vma)) {
-			spin_unlock(vmf.ptl);
+			spin_unlock(vmf->ptl);
 			hugetlb_vma_unlock_read(vma);
 			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
-			return handle_userfault(&vmf, VM_UFFD_WP);
+			return handle_userfault(vmf, VM_UFFD_WP);
 		}
 
-		vmf.orig_pte = huge_pte_clear_uffd_wp(vmf.orig_pte);
-		set_huge_pte_at(mm, vmf.address, vmf.pte, vmf.orig_pte,
+		vmf->orig_pte = huge_pte_clear_uffd_wp(vmf->orig_pte);
+		set_huge_pte_at(mm, vmf->address, vmf->pte, vmf->orig_pte,
 				huge_page_size(hstate_vma(vma)));
 		/* Fallthrough to CoW */
 	}
@@ -6813,27 +6790,27 @@ vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	 * Representing this difference would be tricky with the current code,
 	 * so just hold the lock for the duration of hugetlb_wp().
 	 */
-	folio = page_folio(pte_page(vmf.orig_pte));
+	folio = page_folio(pte_page(vmf->orig_pte));
 	folio_lock(folio);
 	folio_get(folio);
 
 	if (flags & (FAULT_FLAG_WRITE|FAULT_FLAG_UNSHARE)) {
-		if (!huge_pte_write(vmf.orig_pte)) {
-			ret = hugetlb_wp(&vmf);
+		if (!huge_pte_write(vmf->orig_pte)) {
+			ret = hugetlb_wp(vmf);
 			goto out_put_page;
 		} else if (likely(flags & FAULT_FLAG_WRITE)) {
-			vmf.orig_pte = huge_pte_mkdirty(vmf.orig_pte);
+			vmf->orig_pte = huge_pte_mkdirty(vmf->orig_pte);
 		}
 	}
-	vmf.orig_pte = pte_mkyoung(vmf.orig_pte);
-	if (huge_ptep_set_access_flags(vma, vmf.address, vmf.pte, vmf.orig_pte,
+	vmf->orig_pte = pte_mkyoung(vmf->orig_pte);
+	if (huge_ptep_set_access_flags(vma, vmf->address, vmf->pte, vmf->orig_pte,
 						flags & FAULT_FLAG_WRITE))
-		update_mmu_cache(vma, vmf.address, vmf.pte);
+		update_mmu_cache(vma, vmf->address, vmf->pte);
 out_put_page:
 	folio_unlock(folio);
 	folio_put(folio);
 out_ptl:
-	spin_unlock(vmf.ptl);
+	spin_unlock(vmf->ptl);
 out_mutex:
 	hugetlb_vma_unlock_read(vma);
 

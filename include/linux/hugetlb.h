@@ -139,8 +139,7 @@ void hugetlb_report_meminfo(struct seq_file *);
 int hugetlb_report_node_meminfo(char *buf, int len, int nid);
 void hugetlb_show_meminfo_node(int nid);
 unsigned long hugetlb_total_pages(void);
-vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
-			unsigned long address, unsigned int flags);
+vm_fault_t hugetlb_fault(struct vm_fault *vmf);
 #ifdef CONFIG_USERFAULTFD
 int hugetlb_mfill_atomic_pte(pte_t *dst_pte,
 			     struct vm_area_struct *dst_vma,
@@ -463,9 +462,7 @@ static inline void __unmap_hugepage_range(struct mmu_gather *tlb,
 	BUG();
 }
 
-static inline vm_fault_t hugetlb_fault(struct mm_struct *mm,
-			struct vm_area_struct *vma, unsigned long address,
-			unsigned int flags)
+static inline vm_fault_t hugetlb_fault(struct vm_fault *vmf)
 {
 	BUG();
 	return 0;
@@ -1075,8 +1072,26 @@ static inline unsigned long huge_page_mask_align(struct file *file)
 	return PAGE_MASK & ~huge_page_mask(hstate_file(file));
 }
 
+/*
+ * Convert the address within this vma to the page offset within
+ * the mapping, huge page units here.
+ */
+static pgoff_t vma_hugecache_offset(struct hstate *h,
+				    struct vm_area_struct *vma,
+				    unsigned long address)
+{
+	return ((address - vma->vm_start) >> huge_page_shift(h)) +
+		(vma->vm_pgoff >> huge_page_order(h));
+}
+
 #else	/* CONFIG_HUGETLB_PAGE */
 struct hstate {};
+
+static inline pgoff_t vma_hugecache_offset(struct vm_area_struct *vma,
+					   unsigned long address)
+{
+	return linear_page_index(vma, address);
+}
 
 static inline unsigned long huge_page_mask_align(struct file *file)
 {
