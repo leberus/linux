@@ -2987,6 +2987,322 @@ static long do_pagemap_cmd(struct file *file, unsigned int cmd,
 	}
 }
 
+unsigned long pagemap_set_category(struct pagemap_scan_private *p,
+				   struct pt_range_walk *ptw)
+{
+	unsigned long categories = 0;
+
+	if (ptw->present) {
+		categories |= PAGE_IS_PRESENT;
+
+		if (type == PTW_FOLIO && !PageAnon(ptw->page))
+			categories |= PAGE_IS_FILE;
+		if (type == PTW_PFN)
+			categories |= PAGE_IS_PFNZERO;
+	} else {
+		categories |= PAGE_IS_SWAPPED;
+	}
+
+	switch (ptw->level) {
+	case PTW_PUD_LEVEL:
+		if (ptw->present) {
+			if (pud_uffd_wp(ptw->pud))
+				categories |= PAGE_IS_WRITTEN;
+			if (pud_soft_dirty(ptw->pud))
+				categories |= PAGE_IS_SOFT_DIRTY;
+		} else {
+			if (!pud_swp_uffd_wp(ptw->pud))
+				categories |= PAGE_IS_WRITTEN;
+			if (!pud_swp_soft_dirty(ptw->pud))
+				categories |= PAGE_IS_SOFT_DIRTY;
+		}
+		break;
+	case PTW_PMD_LEVEL:
+		if (ptw->present) {
+			if (pmd_uffd_wp(ptw->pmd))
+				categories |= PAGE_IS_WRITTEN;
+			if (pmd_soft_dirty(ptw->pmd))
+				categories |= PAGE_IS_SOFT_DIRTY;
+		} else {
+			const softleaf_t entry = softleaf_from_pmd(ptw->pmd);
+
+			if (softleaf_has_pfn(entry) &&
+			    !folio_test_anon(softleaf_to_folio(entry)))
+				categories |= PAGE_IS_FILE;
+			if (!pmd_swp_uffd_wp(ptw->pmd))
+				categories |= PAGE_IS_WRITTEN;
+			if (!pmd_swp_soft_dirty(ptw->pmd))
+				categories |= PAGE_IS_SOFT_DIRTY;
+		}
+		break;
+	case PTW_PTE_LEVEL:
+		if (ptw->present) {
+			if (pte_uffd_wp(ptw->pte))
+				categories |= PAGE_IS_WRITTEN;
+			if (pte_soft_dirty(ptw->pte))
+				categories |= PAGE_IS_SOFT_DIRTY;
+		} else {
+			if (!pte_swp_uffd_wp_any(ptw->pte))
+				categories |= PAGE_IS_WRITTEN;
+			if (!pte_swp_soft_dirty(ptw->pte))
+				categories |= PAGE_IS_SOFT_DIRTY;
+		}
+		break;
+	}
+
+	return categories;
+}
+
+static long do_pagemap_scan_lab(struct mm_struct *mm, unsigned long uarg)
+{
+	struct pt_range_walk ptw = {
+			.mm = mm
+	};
+	enum pt_range_walk_type type;
+	pt_type_flags_t flags = PT_TYPE_ALL;
+	struct pagemap_scan_private p = {0};
+	struct vm_area_struct *vma;
+	unsigned long walk_start;
+	size_t n_ranges_out = 0;
+	int ret;
+
+	ret = pagemap_scan_get_args(&p.arg, uarg);
+	if (ret)
+		return ret;
+
+	p.masks_of_interest = p.arg.category_mask | p.arg.category_anyof_mask |
+			      p.arg.return_mask;
+	ret = pagemap_scan_init_bounce_buffer(&p);
+	if (ret)
+		return ret;
+
+	for (walk_start = p.arg.start; walk_start < p.arg.end;
+			walk_start = p.arg.walk_end) {
+		struct mmu_notifier_range range;
+		long n_out;
+
+		if (fatal_signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
+
+		ret = mmap_read_lock_killable(mm);
+		if (ret)
+			break;
+
+		/* Protection change for the range is going to happen. */
+		if (p.arg.flags & PM_SCAN_WP_MATCHING) {
+			mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_VMA, 0,
+						mm, walk_start, p.arg.end);
+			mmu_notifier_invalidate_range_start(&range);
+		}
+
+		vma = find_vma(mm, walk_start);
+		type = pt_range_walk_start(&ptw, vma, vma->vm_start, vma->vm_end, flags);
+		while (type != PTW_DONE) {
+
+			unsigned long categories = p->cur_vma_category |
+						   pagemap_set_category(p, &ptw);
+
+			if (pagemap_scan_is_interesting(categories, p)) {
+				int ret;
+				unsigned long end;
+
+				end = ptw.next_addr;
+				ret = pagemap_scan_output(categories, p, start, &end);
+				if (start == end)
+					goto keep_walking;
+				if (~p->arg.flags & PM_SCAN_WP_MATCHING)
+					goto keep_walking;
+				if (~categories & PAGE_IS_WRITTEN)
+					goto keep walking;
+
+				if (end != start + HPAGE_SIZE) {
+					/*
+					 * HugeTLB differs here (heh?)
+					 */
+					if (is_vm_hugetlb_page(ptw.vma)) {
+						/* Partial HugeTLB page WP isn't possible. */
+						pagemap_scan_backout_range(p, start, end);
+						p->arg.walk_end = start;
+						ret = 0;
+						goto keep_walking;
+					}
+					if (ptw.level == PTW_PMD_LEVEL) {
+						split_huge_pmd(ptw.vma, ptw.pmd, start);
+						pagemap_scan_backout_range(p, start, end);
+						/* Relaunch now that we split the pmd */
+						goto relaunch;
+					}
+				}
+
+				if (ptw.level == PTW_PUD_LEVEL)
+					make_uffd_wp_pud(ptw.vma, start, ptw.pud);
+				if (ptw.level == PTW_PMD_LEVEL)
+					make_uffd_wp_pmd(ptw.vma, start, ptw.pmd);
+				if (ptw.level == PTW_PTE_LEVEL)
+					make_uffd_wp_pte(ptw.vma, start, ptw.pte);
+			}
+keep_walking:
+			type = pt_range_walk_next(&ptw, vma, vma->vm_start, vma->vm_end, flags);
+		}
+		pt_range_walk_done(&ptw);
+
+		if (p.arg.flags & PM_SCAN_WP_MATCHING)
+			mmu_notifier_invalidate_range_end(&range);
+
+		mmap_read_unlock(mm);
+
+		n_out = pagemap_scan_flush_buffer(&p);
+		if (n_out < 0)
+			ret = n_out;
+		else
+			n_ranges_out += n_out;
+
+		if (ret != -ENOSPC)
+			break;
+
+		if (p.arg.vec_len == 0 || p.found_pages == p.arg.max_pages)
+			break;
+	}
+
+	/* ENOSPC signifies early stop (buffer full) from the walk. */
+	if (!ret || ret == -ENOSPC)
+		ret = n_ranges_out;
+
+	/* The walk_end isn't set when ret is zero */
+	if (!p.arg.walk_end)
+		p.arg.walk_end = p.arg.end;
+	if (pagemap_scan_writeback_args(&p.arg, uarg))
+		ret = -EFAULT;
+
+	kfree(p.vec_buf);
+	return ret;
+}
+
+static ssize_t pagemap_read(struct file *file, char __user *buf,
+			    size_t count, loff_t *ppos)
+{
+	struct mm_struct *mm = file->private_data;
+	struct pagemapread pm;
+	unsigned long src;
+	unsigned long svpfn;
+	unsigned long start_vaddr;
+	unsigned long end_vaddr;
+	int ret = 0, copied = 0;
+
+	if (!mm || !mmget_not_zero(mm))
+		goto out;
+
+	ret = -EINVAL;
+	/* file position must be aligned */
+	if ((*ppos % PM_ENTRY_BYTES) || (count % PM_ENTRY_BYTES))
+		goto out_mm;
+
+	ret = 0;
+	if (!count)
+		goto out_mm;
+
+	/* do not disclose physical addresses: attack vector */
+	pm.show_pfn = file_ns_capable(file, &init_user_ns, CAP_SYS_ADMIN);
+
+	pm.len = (PAGEMAP_WALK_SIZE >> PAGE_SHIFT);
+	pm.buffer = kmalloc_array(pm.len, PM_ENTRY_BYTES, GFP_KERNEL);
+	ret = -ENOMEM;
+	if (!pm.buffer)
+		goto out_mm;
+
+	src = *ppos;
+	svpfn = src / PM_ENTRY_BYTES;
+	end_vaddr = mm->task_size;
+
+	/* watch out for wraparound */
+	start_vaddr = end_vaddr;
+	if (svpfn <= (ULONG_MAX >> PAGE_SHIFT)) {
+		unsigned long end;
+
+		ret = mmap_read_lock_killable(mm);
+		if (ret)
+			goto out_free;
+		start_vaddr = untagged_addr_remote(mm, svpfn << PAGE_SHIFT);
+		mmap_read_unlock(mm);
+
+		end = start_vaddr + ((count / PM_ENTRY_BYTES) << PAGE_SHIFT);
+		if (end >= start_vaddr && end < mm->task_size)
+			end_vaddr = end;
+	}
+
+	/* Ensure the address is inside the task */
+	if (start_vaddr > mm->task_size)
+		start_vaddr = end_vaddr;
+
+	ret = 0;
+	while (count && (start_vaddr < end_vaddr)) {
+		int len;
+		unsigned long end;
+
+		pm.pos = 0;
+		end = (start_vaddr + PAGEMAP_WALK_SIZE) & PAGEMAP_WALK_MASK;
+		/* overflow ? */
+		if (end < start_vaddr || end > end_vaddr)
+			end = end_vaddr;
+		ret = mmap_read_lock_killable(mm);
+		if (ret)
+			goto out_free;
+
+		/*
+		 * ptw_range_walk
+		 */
+
+		mmap_read_unlock(mm);
+		start_vaddr = end;
+
+		len = min(count, PM_ENTRY_BYTES * pm.pos);
+		if (copy_to_user(buf, pm.buffer, len)) {
+			ret = -EFAULT;
+			goto out_free;
+		}
+		copied += len;
+		buf += len;
+		count -= len;
+	}
+	*ppos += copied;
+	if (!ret || ret == PM_END_OF_BUFFER)
+		ret = copied;
+
+out_free:
+	kfree(pm.buffer);
+out_mm:
+	mmput(mm);
+out:
+	return ret;
+}
+
+static int pagemap_open(struct inode *inode, struct file *file)
+{
+	struct mm_struct *mm;
+
+	mm = proc_mem_open(inode, PTRACE_MODE_READ);
+	if (IS_ERR(mm))
+		return PTR_ERR(mm);
+	file->private_data = mm;
+	return 0;
+}
+
+static long do_pagemap_cmd_lab(struct file *file, unsigned int cmd,
+			   unsigned long arg)
+{
+	struct mm_struct *mm = file->private_data;
+
+	switch (cmd) {
+	case PAGEMAP_SCAN:
+		return do_pagemap_scan_lab(mm, arg);
+
+	default:
+		return -EINVAL;
+	}
+}
+
 const struct file_operations proc_pagemap_operations = {
 	.llseek		= mem_lseek, /* borrow this */
 	.read		= pagemap_read,
@@ -2995,6 +3311,18 @@ const struct file_operations proc_pagemap_operations = {
 	.unlocked_ioctl = do_pagemap_cmd,
 	.compat_ioctl	= do_pagemap_cmd,
 };
+
+const struct file_operations proc_pagemap_operations_lab = {
+	.llseek		= mem_lseek, /* borrow this */
+	.read		= pagemap_read_lab,
+	.open		= pagemap_open,
+	.release	= pagemap_release,
+	.unlocked_ioctl = do_pagemap_cmd_lab,
+	.compat_ioctl	= do_pagemap_cmd_lab,
+};
+
+/* How can we split pagemap_scan_ops */
+
 #endif /* CONFIG_PROC_PAGE_MONITOR */
 
 #ifdef CONFIG_NUMA
