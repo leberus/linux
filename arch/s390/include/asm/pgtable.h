@@ -901,10 +901,30 @@ static inline pmd_t pmd_clear_soft_dirty(pmd_t pmd)
 	return clear_pmd_bit(pmd, __pgprot(_SEGMENT_ENTRY_SOFT_DIRTY));
 }
 
+static inline int pud_soft_dirty(pud_t pud)
+{
+	return pud_val(pud) & _SEGMENT_ENTRY_SOFT_DIRTY;
+}
+
+static inline pud_t pud_mksoft_dirty(pud_t pud)
+{
+	return set_pud_bit(pud, __pgprot(_SEGMENT_ENTRY_SOFT_DIRTY));
+}
+
+static inline pud_t pud_clear_soft_dirty(pud_t pud)
+{
+	return clear_pud_bit(pud, __pgprot(_SEGMENT_ENTRY_SOFT_DIRTY));
+}
+
 #ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
 #define pmd_swp_soft_dirty(pmd)		pmd_soft_dirty(pmd)
 #define pmd_swp_mksoft_dirty(pmd)	pmd_mksoft_dirty(pmd)
 #define pmd_swp_clear_soft_dirty(pmd)	pmd_clear_soft_dirty(pmd)
+#endif
+#ifdef CONFIG_HUGETLB_PAGE
+#define pud_swp_soft_dirty(pud)		pud_soft_dirty(pud)
+#define pud_swp_mksoft_dirty(pud)	pud_mksoft_dirty(pud)
+#define pud_swp_clear_soft_dirty(pud)	pud_clear_soft_dirty(pud)
 #endif
 
 /*
