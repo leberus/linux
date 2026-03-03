@@ -906,6 +906,11 @@ static inline pmd_t pmd_clear_soft_dirty(pmd_t pmd)
 #define pmd_swp_mksoft_dirty(pmd)	pmd_mksoft_dirty(pmd)
 #define pmd_swp_clear_soft_dirty(pmd)	pmd_clear_soft_dirty(pmd)
 #endif
+#ifdef CONFIG_HUGETLB_PAGE
+#define pud_swp_soft_dirty(pud)		pud_soft_dirty(pud)
+#define pud_swp_mksoft_dirty(pud)	pud_mksoft_dirty(pud)
+#define pud_swp_clear_soft_dirty(pud)	pud_clear_soft_dirty(pud)
+#endif
 
 /*
  * query functions pte_write/pte_dirty/pte_young only work if
