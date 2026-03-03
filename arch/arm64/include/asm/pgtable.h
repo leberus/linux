@@ -1528,6 +1528,11 @@ static inline pmd_t pmdp_establish(struct vm_area_struct *vma,
 #define __swp_entry_to_pmd(swp)		__pmd((swp).val)
 #endif /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
 
+#ifdef CONFIG_HUGETLB_PAGE
+#define __pud_to_swp_entry(pud)         ((swp_entry_t) { pud_val(pud) })
+#define __swp_entry_to_pud(swp)         __pud((swp).val)
+#endif
+
 /*
  * Ensure that there are not more swap files than can be encoded in the kernel
  * PTEs.
