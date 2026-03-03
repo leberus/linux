@@ -301,6 +301,18 @@ static inline bool pmd_leaf(pmd_t pte)
 	return pmd_flags(pte) & _PAGE_PSE;
 }
 
+#ifdef CONFIG_HUGETLB_PAGE
+static inline int pmd_huge(pmd_t pmd)
+{
+	return (pmd_val(pmd) & _PAGE_PSE) == _PAGE_PSE;
+}
+
+static inline int pud_huge(pud_t pud)
+{
+	return (pud_val(pud) & _PAGE_PSE) == _PAGE_PSE;
+}
+#endif
+
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static inline int pmd_trans_huge(pmd_t pmd)
 {
