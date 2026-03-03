@@ -581,6 +581,11 @@ static inline int pmd_protnone(pmd_t pmd)
 }
 #endif
 
+#define pud_present(pud)	pte_present(pud_pte(pud))
+#define pud_dirty(pud)		pte_dirty(pud_pte(pud))
+#define pud_young(pud)		pte_young(pud_pte(pud))
+#define pud_write(pud)		pte_write(pud_pte(pud))
+
 #define pmd_present(pmd)	pte_present(pmd_pte(pmd))
 #define pmd_dirty(pmd)		pte_dirty(pmd_pte(pmd))
 #define pmd_young(pmd)		pte_young(pmd_pte(pmd))
