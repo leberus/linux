@@ -310,7 +310,6 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 /*
  * We provide our own arch_get_unmapped_area to cope with VIPT caches.
  */
-#define HAVE_ARCH_UNMAPPED_AREA
 #define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
 
 #endif /* !__ASSEMBLY__ */
