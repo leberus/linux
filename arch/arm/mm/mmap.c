@@ -26,55 +26,33 @@
  * We unconditionally provide this function for all cases, however
  * in the VIVT case, we optimise out the alignment rules.
  */
-unsigned long
-arch_get_unmapped_area(struct file *filp, unsigned long addr,
-		unsigned long len, unsigned long pgoff,
-		unsigned long flags, vm_flags_t vm_flags)
+bool arch_mappings_need_coloring(struct file *filp, unsigned long flags)
 {
-	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	int do_align = 0;
-	int aliasing = cache_is_vipt_aliasing();
-	struct vm_unmapped_area_info info = {};
+	if (cache_is_vipt_aliasing())
+		return filp || (flags & MAP_SHARED);
+	return false;
+}
 
-	/*
-	 * We only need to do colour alignment if either the I or D
-	 * caches alias.
-	 */
-	if (aliasing)
-		do_align = filp || (flags & MAP_SHARED);
+bool arch_shared_mmap_aliasing(void)
+{
+	return true;
+}
 
-	/*
-	 * We enforce the MAP_FIXED case.
-	 */
-	if (flags & MAP_FIXED) {
-		if (aliasing && flags & MAP_SHARED &&
-		    (addr - (pgoff << PAGE_SHIFT)) & (SHMLBA - 1))
-			return -EINVAL;
-		return addr;
-	}
+bool arch_shared_mmap_aligned(unsigned long addr, unsigned long pgoff)
+{
+	return !((addr - (pgoff << PAGE_SHIFT)) & (SHMLBA - 1));
+}
 
-	if (len > TASK_SIZE)
-		return -ENOMEM;
+unsigned long arch_mmap_addr_color_align(unsigned long addr, unsigned long pgoff)
+{
+	return COLOUR_ALIGN(addr, pgoff);
+}
 
-	if (addr) {
-		if (do_align)
-			addr = COLOUR_ALIGN(addr, pgoff);
-		else
-			addr = PAGE_ALIGN(addr);
-
-		vma = find_vma(mm, addr);
-		if (TASK_SIZE - len >= addr &&
-		    (!vma || addr + len <= vm_start_gap(vma)))
-			return addr;
-	}
-
-	info.length = len;
-	info.low_limit = mm->mmap_base;
-	info.high_limit = TASK_SIZE;
-	info.align_mask = do_align ? (PAGE_MASK & (SHMLBA - 1)) : 0;
-	info.align_offset = pgoff << PAGE_SHIFT;
-	return vm_unmapped_area(&info);
+unsigned long arch_mmap_align_mask(bool do_color_align)
+{
+	if (do_color_align)
+		return (PAGE_MASK & (SHMLBA - 1));
+	return 0;
 }
 
 unsigned long
