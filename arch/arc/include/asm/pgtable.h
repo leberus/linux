@@ -23,9 +23,6 @@
 
 extern pgd_t swapper_pg_dir[] __aligned(PAGE_SIZE);
 
-/* to cope with aliasing VIPT cache */
-#define HAVE_ARCH_UNMAPPED_AREA
-
 #endif /* __ASSEMBLER__ */
 
 #endif
