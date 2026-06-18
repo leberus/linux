@@ -21,42 +21,14 @@
  * a specific page of an object is always mapped at a multiple of
  * SHMLBA bytes.
  */
-unsigned long
-arch_get_unmapped_area(struct file *filp, unsigned long addr,
-		unsigned long len, unsigned long pgoff,
-		unsigned long flags, vm_flags_t vm_flags)
+bool arch_shared_mmap_aligned(unsigned long addr, unsigned long pgoff)
 {
-	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	struct vm_unmapped_area_info info = {};
+	return !((addr - (pgoff << PAGE_SHIFT)) & (SHMLBA - 1));
+}
 
-	/*
-	 * We enforce the MAP_FIXED case.
-	 */
-	if (flags & MAP_FIXED) {
-		if (flags & MAP_SHARED &&
-		    (addr - (pgoff << PAGE_SHIFT)) & (SHMLBA - 1))
-			return -EINVAL;
-		return addr;
-	}
-
-	if (len > TASK_SIZE)
-		return -ENOMEM;
-
-	if (addr) {
-		addr = PAGE_ALIGN(addr);
-
-		vma = find_vma(mm, addr);
-		if (TASK_SIZE - len >= addr &&
-		    (!vma || addr + len <= vm_start_gap(vma)))
-			return addr;
-	}
-
-	info.length = len;
-	info.low_limit = mm->mmap_base;
-	info.high_limit = TASK_SIZE;
-	info.align_offset = pgoff << PAGE_SHIFT;
-	return vm_unmapped_area(&info);
+bool arch_shared_mmap_aliasing(void)
+{
+	return true;
 }
 
 static const pgprot_t protection_map[16] = {
