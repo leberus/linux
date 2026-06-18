@@ -675,6 +675,37 @@ unsigned long vm_unmapped_area(struct vm_unmapped_area_info *info)
 	return addr;
 }
 
+__weak bool arch_shared_mmap_aliasing(void)
+{
+	return false;
+}
+
+__weak bool arch_shared_mmap_aligned(unsigned long addr, unsigned long pgoff)
+{
+	return true;
+}
+
+__weak bool arch_mappings_need_coloring(struct file *filp, unsigned long flags)
+{
+	return false;
+}
+
+__weak unsigned long arch_mmap_addr_color_align(unsigned long addr,
+						       unsigned long pgoff)
+{
+	return PAGE_ALIGN(addr);
+}
+
+__weak unsigned long arch_mmap_align_offset(unsigned long pgoff)
+{
+	return pgoff << PAGE_SHIFT;
+}
+
+__weak unsigned long arch_mmap_align_mask(bool do_color_align)
+{
+	return 0;
+}
+
 /* Get an address range which is currently unmapped.
  * For shmat() with addr=0.
  *
@@ -695,15 +726,26 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 	struct vm_area_struct *vma, *prev;
 	struct vm_unmapped_area_info info = {};
 	const unsigned long mmap_end = arch_get_mmap_end(addr, len, flags);
+	bool do_color_align = false;
+
+	if (len > TASK_SIZE)
+		return -ENOMEM;
 
 	if (len > mmap_end - mmap_min_addr)
 		return -ENOMEM;
 
-	if (flags & MAP_FIXED)
+	do_color_align = arch_mappings_need_coloring(filp, flags);
+
+	if (flags & MAP_FIXED) {
+		if (flags & MAP_SHARED && arch_shared_mmap_aliasing() &&
+		    !arch_shared_mmap_aligned(addr, pgoff))
+			return -EINVAL;
 		return addr;
+	}
 
 	if (addr) {
-		addr = PAGE_ALIGN(addr);
+		addr = do_color_align ? arch_mmap_addr_color_align(addr, pgoff) :
+					PAGE_ALIGN(addr);
 		vma = find_vma_prev(mm, addr, &prev);
 		if (mmap_end - len >= addr && addr >= mmap_min_addr &&
 		    (!vma || addr + len <= vm_start_gap(vma)) &&
@@ -715,6 +757,8 @@ generic_get_unmapped_area(struct file *filp, unsigned long addr,
 	info.low_limit = mm->mmap_base;
 	info.high_limit = mmap_end;
 	info.start_gap = stack_guard_placement(vm_flags);
+	info.align_offset = arch_mmap_align_offset(pgoff);
+	info.align_mask = arch_mmap_align_mask(do_color_align);
 	if (filp && is_file_hugepages(filp))
 		info.align_mask = huge_page_mask_align(filp);
 	return vm_unmapped_area(&info);
