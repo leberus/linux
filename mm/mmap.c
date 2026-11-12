@@ -719,6 +719,13 @@ __weak unsigned long arch_mmap_align_mask(bool do_color_align)
 	return 0;
 }
 
+__weak unsigned long arch_get_mmap_base_bottomup(void)
+{
+	struct mm_struct *mm = current->mm;
+
+	return mm->mmap_base;
+}
+
 /* Get an address range which is currently unmapped.
  * For shmat() with addr=0.
  *

@@ -51,50 +51,31 @@ static inline unsigned long COLOUR_ALIGN(unsigned long addr,
 	return base + off;
 }
 
-unsigned long arch_get_unmapped_area(struct file *filp, unsigned long addr,
-	unsigned long len, unsigned long pgoff, unsigned long flags,
-	vm_flags_t vm_flags)
+bool arch_mappings_need_coloring(struct file *filp, unsigned long flags)
 {
-	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	int do_colour_align;
-	struct vm_unmapped_area_info info = {};
+	return filp || (flags & MAP_SHARED);
+}
 
-	if (flags & MAP_FIXED) {
-		/* We do not accept a shared mapping if it would violate
-		 * cache aliasing constraints.
-		 */
-		if ((flags & MAP_SHARED) &&
-		    ((addr - (pgoff << PAGE_SHIFT)) & shm_align_mask))
-			return -EINVAL;
-		return addr;
-	}
+bool arch_shared_mmap_aligned(unsigned long addr, unsigned long pgoff)
+{
+	return !((addr - (pgoff << PAGE_SHIFT)) & shm_align_mask);
+}
 
-	if (unlikely(len > TASK_SIZE))
-		return -ENOMEM;
+unsigned long arch_mmap_addr_color_align(unsigned long addr, unsigned long pgoff)
+{
+	return COLOUR_ALIGN(addr, pgoff);
+}
 
-	do_colour_align = 0;
-	if (filp || (flags & MAP_SHARED))
-		do_colour_align = 1;
+unsigned long arch_mmap_align_mask(bool do_color_align)
+{
+	if (do_color_align)
+		return (PAGE_MASK & shm_align_mask);
+	return 0;
+}
 
-	if (addr) {
-		if (do_colour_align)
-			addr = COLOUR_ALIGN(addr, pgoff);
-		else
-			addr = PAGE_ALIGN(addr);
-
-		vma = find_vma(mm, addr);
-		if (TASK_SIZE - len >= addr &&
-		    (!vma || addr + len <= vm_start_gap(vma)))
-			return addr;
-	}
-
-	info.length = len;
-	info.low_limit = TASK_UNMAPPED_BASE;
-	info.high_limit = TASK_SIZE;
-	info.align_mask = do_colour_align ? (PAGE_MASK & shm_align_mask) : 0;
-	info.align_offset = pgoff << PAGE_SHIFT;
-	return vm_unmapped_area(&info);
+unsigned long arch_get_mmap_base_bottomup(void)
+{
+	return TASK_UNMAPPED_BASE;
 }
 
 unsigned long
